@@ -38,7 +38,7 @@ evec <- evec[!evec$superpop %in% "SAS", ]
 evec <- evec[evec$group %in% "1000G" | evec$id %in% linking$NWDID_from_master,]
 
 # KNN ------------------------------------
-# Train and test on 1KG dataset, then apply on the MESA samples
+# Train and test on 1KG dataset, then apply on the SPIROMICS samples
 set.seed(4120)
 
 # Normalize data - same scale
@@ -75,7 +75,7 @@ plot(1:10, accuracy, type = "b",
      pch = ifelse(1:10 == k, 19, 1))
 dev.off()
 
-# Use on mesa samples
+# Use on SPIROMICS samples
 knn_spiromics <- knn(train = train, test = evec_norm_spiromics, cl = train_labels, k = k)
 addmargins(table(knn_spiromics))
 knn_spiromics <- as.character(knn_spiromics)

@@ -9,7 +9,7 @@ Using the following software:
 * eigensoft/6.1.3
 * R/3.4.1
 
-## a) Pull out genotypes, sort out PCs, MAF filter
+## a) Process genotype data
 
 Using genotype data from the [TOPMed](https://doi.org/10.1101/563866) Freeze 9 (_freeze.9.readme.txt_):
 
@@ -42,7 +42,7 @@ bcftools concat --threads 12 -Ob --file-list genotype/file_list.txt -o genotype/
 ```
 
 * Keep only biallelic sites
-	* "True multiallelic sites are not observed very frequently unless you look at very large cohorts, so they are often taken as a sign of a noisy region where artifacts are likely." [GATK Glossary]("https://gatk.broadinstitute.org/hc/en-us/articles/360035890771-Biallelic-vs-Multiallelic-sites)
+	* "True multiallelic sites are not observed very frequently unless you look at very large cohorts, so they are often taken as a sign of a noisy region where artifacts are likely." [GATK Glossary](https://gatk.broadinstitute.org/hc/en-us/articles/360035890771-Biallelic-vs-Multiallelic-sites)
 
 ```bash
 # Firstly, join biallelic sites into multiallelic records
@@ -61,9 +61,6 @@ bcftools view --threads 20 -Oz -o genotype/freeze9.pass_only.spiromics_2710sampl
 ```bash
 PLINK_BINARY='genotype/freeze9.pass_only.spiromics_2710samples.maf01.biallelic'
 plink --make-bed --output-chr chrM --vcf ${PLINK_BINARY}.vcf.gz --out ${PLINK_BINARY}
-
-# Delete tmp files
-rm genotype/tmp_chr*
 ```
 
 * VCF file for individuals with RNA-seq data + filtering of MAF >= 0.05 - __144 indiv__
@@ -82,7 +79,9 @@ plink --make-bed --output-chr chrM --geno 0.1 --vcf ${PLINK_BINARY}.vcf.gz --out
 
 * Create lookup table for WGS variants
 
-Two files: 1) if variant is present multiple times, then take first rsID from the annotation file (ID from the oldest dbSNP version, usually); 2) list all rsIDs
+Using dbSNP version b151_GRCh38p7 as a reference, downloaded form [here](https://ftp.ncbi.nih.gov/snp/organisms/human_9606_b151_GRCh38p7/VCF/)
+
+Making two files: 1) if variant is present multiple times, then take first rsID from the annotation file (ID from the oldest dbSNP version, usually); 2) list all rsIDs
 
 ```bash
 # Lookup table with the following columns: chr, variant_pos, variant_id, ref, alt, rs_id_dbSNP151_GRCh38p7
@@ -93,7 +92,11 @@ gzip genotype/freeze9.pass_only.spiromics_144samples.maf05.biallelic.lookup_tabl
 scripts/create_lookup_table.R
 ```
 
-### __Principal Component Analysis (PCA)__
+## b) Principal Component Analysis (PCA)
+
+Perform PCA to use principal components (PCs) as covariates in the eQTL model to correct for population stratification
+
+### __PCA__
 
 Perform PCA on a set of LD-independent autosomal SNPs from not long-range LD regions with a call rate >= 99% and MAF >= 0.05 using [EIGENSTRAT](https://github.com/argriffing/eigensoft/blob/master/EIGENSTRAT).
 
@@ -105,21 +108,14 @@ INDIV='linking_files/master_with_resends_and_topmedids.cleaned_formatted.unrelat
 OUT_DIR='genotype/pca'
 mkdir -p ${OUT_DIR}/fig
 
-# Run LD pruning of autosomal common SNPs with plink,
+# Run LD pruning of autosomal common SNPs with plink (--indep-pairwise 200 100 0.1 option)
 ## Keep only unrelated individuals
 ## SNPs with a 99% genotyping rate (1% missing), MAF >= 0.05
 ## Individuals with 95% genotyping rate (5% missing)
 scripts/pca_ld_pruning.sh ${PLINK_BINARY} ${INDIV} ${OUT_DIR}
 ```
 
-* Check identity-by-decent (kinship >= 1/32 = 0.03125)
-
-```bash
-OUT_DIR='genotype/pca'
-plink --file ${OUT_DIR}/ld_pruned --genome --min 0.03 --out ${OUT_DIR}/ld_pruned
-```
-
-* Run `smartpca` to calculate PCs for a given race/ethnic group
+* Run `smartpca` to calculate PCs
 
 ```bash
 OUT_DIR='genotype/pca'
@@ -131,26 +127,16 @@ cat ${OUT_DIR}/ld_pruned.ped | cut -d ' ' -f 1-6 | awk -v group='spiromics' 'BEG
 smartpca.perl -i ${OUT_DIR}/ld_pruned.ped -a ${OUT_DIR}/ld_pruned.map -b ${OUT_DIR}/ld_pruned.pedind -k 20 -m 0 -o ${OUT_DIR}/smartpca.pca -e ${OUT_DIR}/smartpca.eval -p ${OUT_DIR}/smartpca.plot -l ${OUT_DIR}/smartpca.log
 ```
 
-* PCA plot
-
-```bash
-mkdir -p 'genotype/pca/fig'
-PREFIX='SPIROMICS'
-HIGHLIGHT_SAMPLES='linking_files/Topmed_rna_seq_link-3.present_in_added.txt'
-
-scripts/pca_plot.R ${PREFIX} ${HIGHLIGHT_SAMPLES}
-```
-
 ### __Project SPIROMICS samples onto 1KG populations__
 
 To understand the clusters on PCA plots, and to choose the number of PCs to be used in eQTL mapping
 
-Using processed 1KG VCF file:
+Using processed 1000G VCF file (1000G VCF files downloaded from [here](http://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1000_genomes_project/release/20190312_biallelic_SNV_and_INDEL/)):
 
 * Common SNPs and MAF > 5% ('MAF[0]>0.05 & TYPE=\"snp\"')
 * Selected only unrelated and outbread individuals from Gazal et al. 2015
 
-Steps for projecting SPIROMICS individuals onto 1KG populations:
+Steps for projecting SPIROMICS individuals onto 1000G populations:
 
 * Merge 1000G and SPIROMICS VCF files
 * Merged VCF to binary PLINK format and additional filtering before LD-pruning - only autosomal SNPs, CR 99% and MAF 5% across all the samples, exclude regions of long-range LD (Table 1 of Price et al. 2008 AJHG)
@@ -170,18 +156,12 @@ VCF='genotype/pca/1kg/merged_1kg_spiromics.vcf.gz'
 scripts/pca_ld_pruning_merged_vcf.sh ${VCF}
 
 # Run smartpca from eigenstrat (same options as in GTEx v8)
-# Using option `-w poplistname` to infer eigenvectors using only individuals from a subset of populations, and then project individuals from all populations onto those eigenvectors.
+# Using option `-w poplistname` to infer eigenvectors using only individuals from a subset of populations, and then project individuals from all populations onto those eigenvectors
 FILE='genotype/pca/1kg/merged_1kg_spiromics.vcf.gz.filtered.ld_pruned'
 smartpca.perl -i ${FILE}.ped -a ${FILE}.map -b ${FILE}.pedind -w genotype/pca/1kg/poplist.txt -k 20 -m 0 -o ${FILE}.pca -e ${FILE}.eval -p ${FILE}.plot -l ${FILE}.log
 
 # Use KNN to inferre the population of the SPIROMICS samples
 scripts/pca_predict_1kg_pop_knn.R
-```
-
-Make figures
-
-```bash
-scripts/pca_plot_projected_onto_1kg.R
 ```
 
 ### __Final number of PCs to use__
