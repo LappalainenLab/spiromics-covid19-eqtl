@@ -1,0 +1,450 @@
+---
+title: "Final list of candidate genes"
+author: "Silva Kasela"
+date: "5/20/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.path = here::here("candidate_genes", "fig/"), dev = c('png', 'pdf'))
+options(knitr.table.format = "html") 
+
+library(here)
+library(openxlsx)
+library(VennDiagram)
+library(dplyr)
+library(UpSetR)
+library(knitr)
+library(kableExtra)
+
+```
+
+```{r read-in-data}
+# Candidate genes version 10 - need to filter genes from the Blanco-Melo study for the final list
+version <- 10
+candidate_genes <- read.table(here("candidate_genes", paste0("covid19_candidate_genes_v", version, ".txt")), header = T, sep = "\t", stringsAsFactors = F)
+colnames(candidate_genes)[1] <- "gene_name"
+
+# Gencode annotations
+gene_annot <- read.table(here("references", "gencode.v33.annotation.GRCh38.gene_id_name_type.txt"), header = T, sep = "\t", stringsAsFactors = F)
+
+# Genes expressed in spiromics
+norm_expr <- data.table::fread(here("expression", "normalized", "spiromics.normalized_expression.bed.gz"), header = T, sep = "\t", stringsAsFactors = F, data.table = F)
+
+```
+
+## Candidate genes studies
+
+Candidate genes from different sources:
+
+* Hoffmann et al. 2020, Cell, _SARS-CoV-2 Cell Entry Depends on ACE2 and TMPRSS2 and Is Blocked by a Clinically Proven Protease Inhibitor_
+* Blanco-Melo et al. 2020, Cell, _Imbalanced host response to SARS-CoV-2 drives development of COVID-19_
+    + (Title of the pre-print: _SARS-CoV-2 launches a unique transcriptional signature from in vitro, ex vivo, and in vivo systems_)
+    + Transcriptional response to SARS-CoV-2 _in vitro_, _ex vivo_, and _in vivo_ models
+* Gordon et al. 2020, Nature, _A SARS-CoV-2 protein interaction map reveals targets for drug repurposing_
+    + (Title of the pre-print title: _A SARS-CoV-2-Human Protein-Protein Interaction Map Reveals Drug Targets and Potential Drug-Repurposing_)
+    + 332 high-confidence SARS-CoV-2-human protein-protein interactions (PPIs)
+* Gassen et al. 2020, bioRxiv, _Analysis of SARS-CoV-2-controlled autophagy reveals spermidine, MK-2206, and niclosamide as putative antiviral therapeutics_
+* Wang, K. et al. 2020, bioRxiv, _SARS-CoV-2 invades host cells via a novel route: CD147-spike protein_
+* COVID-19 Cell Atlas, https://www.covid19cellatlas.org/
+
+```{r}
+# Add new titles
+for (i in 1:nrow(candidate_genes)) {
+  if (grepl("SARS-CoV-2 launches a unique transcriptional signature from in vitro, ex vivo, and in vivo systems", candidate_genes$Source[i])) {
+    candidate_genes$Source[i] <- sub("SARS-CoV-2 launches a unique transcriptional signature from in vitro, ex vivo, and in vivo systems",
+                                     "Imbalanced host response to SARS-CoV-2 drives development of COVID-19",
+                                     candidate_genes$Source[i])
+  }
+  if (grepl("A SARS-CoV-2-Human Protein-Protein Interaction Map Reveals Drug Targets and Potential Drug-Repurposing", candidate_genes$Source[i])) {
+    candidate_genes$Source[i] <- sub("A SARS-CoV-2-Human Protein-Protein Interaction Map Reveals Drug Targets and Potential Drug-Repurposing",
+                                     "A SARS-CoV-2 protein interaction map reveals targets for drug repurposing",
+                                     candidate_genes$Source[i])
+  }
+}
+
+refs <- c("Hoffmann et al. 2020" = "SARS-CoV-2 Cell Entry Depends on ACE2 and TMPRSS2 and Is Blocked by a Clinically Proven Protease Inhibitor",
+          "Blanco-Melo et al. 2020" = "Imbalanced host response to SARS-CoV-2 drives development of COVID-19",
+          "Gordon et al. 2020" = "A SARS-CoV-2 protein interaction map reveals targets for drug repurposing",
+          "Gassen et al. 2020" = "Analysis of SARS-CoV-2-controlled autophagy reveals spermidine, MK-2206, and niclosamide as putative antiviral therapeutics",
+          "Wang et al. 2020" = "SARS-CoV-2 invades host cells via a novel route: CD147-spike protein",
+          "COVID-19 Cell Atlas" = "covid19cellatlas")
+
+candidate_genes$ref <- NULL
+for (i in 1:nrow(candidate_genes)) {
+  idx <- sapply(refs, function(x) grepl(x, candidate_genes$Source[i]))
+  candidate_genes$ref[i] <- paste(names(refs[idx]), collapse = "; ")
+}
+
+```
+
+#### Select candidate genes from Blanoc-Melo et al.
+
+Genes from Blanco-Melo et al. 2020  are divided into three groups based on experimental evidence:
+
+* In vitro tissue culture (variety of respiratory cell lines)
+    + Human adenocarcinomic alveolar basal epithelial (A549) cells
+        + Also, A549 cells supplemented with a vector expressing ACE2 (A549-ACE2), low-MOI infection (MOI, 0.2), because A549 lung alveolar cells are found to be relatively non-permissive to SARS-CoV-2 replication
+    + Human adenocarcinomic lung epithelial (Calu-3) cells
+* Ex vivo infection of primary cells (normal human bronchial epithelial (NHBE) cells)
+    + NHBE cells isolated from a 79-year-old Caucasian female
+* In vivo samples derived from both COVID-19 patients (and animals)
+    + Compared post-mortem lung samples from two COVID-19-positive patients with biopsied healthy lung tissue from uninfected individuals.
+
+Note about differential expression analysis:
+
+* DE analysis performed by matching each experimental condition with a corresponding mock treated sample that counted for the cell type, collection time, concurrent animal controls, etc.
+
+```{r read-data-blanco-malo}
+# Cell line: selecting Calu-3 and A549 ACE2 expressing cells (low MOI)
+cellline <- read.xlsx(xlsxFile = here("candidate_genes", "blanco_melo_et_al", "1-s2.0-S009286742030489X-mmc1.xlsx"), sheet = 2, na.strings = "NaN")
+# clean data if p-val = 0, then probably a bug (?), replace these with 1
+## apply(cellline[, grepl("padj", colnames(cellline))], 2, function(x) sum(x ==0))
+## apply(cellline[, grepl("padj", colnames(cellline))], 2, function(x) sum(x ==1))
+for (i in 12:21) {
+  cellline[,i] <- ifelse(cellline[,i] == 0, 1, cellline[,i])
+}
+
+# Primary cells
+primary <- read.xlsx(xlsxFile = here("candidate_genes", "blanco_melo_et_al", "1-s2.0-S009286742030489X-mmc2.xlsx"), sheet = 2, na.strings = "NaN")
+## apply(primary[, grepl("padj", colnames(primary))], 2, function(x) sum(x ==0))
+## apply(primary[, grepl("padj", colnames(primary))], 2, function(x) sum(x ==1))
+
+# Human experiment
+human <- read.xlsx(xlsxFile = here("candidate_genes", "blanco_melo_et_al", "1-s2.0-S009286742030489X-mmc4.xlsx"), sheet = 2, na.strings = "NaN")
+
+stopifnot(cellline$GeneName %in% primary$GeneName)
+stopifnot(cellline$GeneName %in% human$Gene_name)
+
+```
+
+__1) Overlap between DEGs from different experiments__
+
+* Adjusted p-value < 0.05
+    + Adj p-values = 0 in the DE results files from cell lines -> possible bug? -> changing these p-values = 1
+
+_In vitro cell lines kept separately or taking the intersection to form one cluster_
+
+```{r fig-venn-blanco-melo-padj, fig.width=5, fig.height=5, out.width='50%', fig.show='hold'}
+cellline_calu3 <- cellline[cellline$`padj_SARS-CoV-2(Calu-3)` < 0.05, ]
+cellline_a549_ace2 <- cellline[cellline$`padj_SARS-CoV-2(A549-ACE2)LowMOI` < 0.05, ]
+primary <- primary[primary$`padj_SARS-CoV-2` < 0.05, ]
+human <- human[!is.na(human$padj) & human$padj < 0.05, ]
+
+x <- list("in vitro\n(Calu-3)" = cellline_calu3$GeneName,
+          "in vitro\n(A549-ACE2*)" = cellline_a549_ace2$GeneName,
+          "ex vivo" = primary$GeneName,
+          "in vivo" = human$Gene_name)
+sapply(x, length)
+
+venn_plot <- venn.diagram(
+	x = x,
+	filename = NULL,
+	col = "transparent",
+	lty = "dotted",
+	lwd = 4,
+	fill = c("cornflowerblue", "green", "yellow", "darkorchid1"),
+	alpha = 0.50,
+	label.col = c("orange", "white", "darkorchid4", "white", "white", "white", "white", "white", "darkblue", "white", "white", "white", "white", "darkgreen", "white"),
+	cex = 1.25,
+	fontfamily = "serif",
+	fontface = "bold",
+	cat.col = c("darkblue", "darkgreen", "orange", "darkorchid4"),
+	cat.cex = 1.5,
+	cat.fontfamily = "serif"
+	)
+grid.draw(venn_plot)
+grid.newpage()
+
+# cell lines together
+venn_plot <- venn.diagram(
+	x = list(
+		"in vitro" = intersect(cellline_calu3$GeneName, cellline_a549_ace2$GeneName),
+		"ex vivo" = primary$GeneName,
+		"in vivo" = human$Gene_name
+		),
+	filename = NULL,
+	col = "transparent",
+	fill = c("red", "blue", "green"),
+	alpha = 0.5,
+	label.col = c("darkred", "white", "darkblue", "white", "white", "white", "darkgreen"),
+	cex = 1.5,
+	fontfamily = "serif",
+	fontface = "bold",
+	cat.default.pos = "text",
+	cat.col = c("darkred", "darkblue", "darkgreen"),
+	cat.cex = 1.5,
+	cat.fontfamily = "serif",
+	cat.dist = c(0.06, 0.06, 0.03),
+	cat.pos = 0
+	)
+grid.draw(venn_plot)
+grid.newpage()
+
+```
+
+Effects sizes in these datasets:
+
+* Calu-3
+
+```{r}
+summary(abs(cellline[cellline$`padj_SARS-CoV-2(Calu-3)` < 0.05, "SARS-CoV-2(Calu-3)_L2FC"]))
+```
+
+* A549-ACE2 (LowMOI)
+
+```{r}
+summary(abs(cellline[cellline$`padj_SARS-CoV-2(A549-ACE2)LowMOI` < 0.05, "SARS-CoV-2(A549-ACE2)LowMOI_L2FC"]))
+```
+
+* Primary cells (NHBE)
+
+```{r}
+summary(abs(primary$`SARS-CoV-2_L2FC`))
+```
+
+* Human experiment
+
+```{r}
+summary(abs(human$log2FoldChange))
+```
+
+__2) Overlap between DEGs from different experiments__
+
+* Adjusted p-value < 0.05 & abs(log2 FC) > 0.5 or 1 in primary cell dataset and other datasets, respectively
+    + Adj p-values = 0 in the DE results files from cell lines -> possible bug? -> changing these p-values = 1
+
+_In vitro cell lines kept separately or taking the intersection to form one cluster_
+
+```{r fig-venn-blanco-melo-padj-log2fc, fig.width=5, fig.height=5, out.width='50%', fig.show='hold'}
+cellline_calu3 <- cellline[cellline$`padj_SARS-CoV-2(Calu-3)` < 0.05 & abs(cellline$`SARS-CoV-2(Calu-3)_L2FC`) > 1, ]
+cellline_a549_ace2 <- cellline[cellline$`padj_SARS-CoV-2(A549-ACE2)LowMOI` < 0.05 & abs(cellline$`SARS-CoV-2(A549-ACE2)LowMOI_L2FC`) > 1, ]
+primary <- primary[primary$`padj_SARS-CoV-2` < 0.05 & abs(primary$`SARS-CoV-2_L2FC`) > 0.5, ]
+human <- human[!is.na(human$padj) & human$padj < 0.05 & abs(human$log2FoldChange) > 1, ]
+
+x <- list("in vitro\n(Calu-3)" = cellline_calu3$GeneName,
+          "in vitro\n(A549-ACE2*)" = cellline_a549_ace2$GeneName,
+          "ex vivo" = primary$GeneName,
+          "in vivo" = human$Gene_name)
+sapply(x, length)
+
+venn_plot <- venn.diagram(
+	x = x,
+	filename = NULL,
+	col = "transparent",
+	lty = "dotted",
+	lwd = 4,
+	fill = c("cornflowerblue", "green", "yellow", "darkorchid1"),
+	alpha = 0.50,
+	label.col = c("orange", "white", "darkorchid4", "white", "white", "white", "white", "white", "darkblue", "white", "white", "white", "white", "darkgreen", "white"),
+	cex = 1.25,
+	fontfamily = "serif",
+	fontface = "bold",
+	cat.col = c("darkblue", "darkgreen", "orange", "darkorchid4"),
+	cat.cex = 1.5,
+	cat.fontfamily = "serif"
+	)
+grid.draw(venn_plot)
+grid.newpage()
+
+# cell lines together
+venn_plot <- venn.diagram(
+	x = list(
+		"in vitro" = intersect(cellline_calu3$GeneName, cellline_a549_ace2$GeneName),
+		"ex vivo" = primary$GeneName,
+		"in vivo" = human$Gene_name
+		),
+	filename = NULL,
+	col = "transparent",
+	fill = c("red", "blue", "green"),
+	alpha = 0.5,
+	label.col = c("darkred", "white", "darkblue", "white", "white", "white", "darkgreen"),
+	cex = 1.5,
+	fontfamily = "serif",
+	fontface = "bold",
+	cat.default.pos = "text",
+	cat.col = c("darkred", "darkblue", "darkgreen"),
+	cat.cex = 1.5,
+	cat.fontfamily = "serif",
+	cat.dist = c(0.06, 0.06, 0.03),
+	cat.pos = 0
+	)
+grid.draw(venn_plot)
+grid.newpage()
+
+```
+
+#### Selection
+
+For final candidate genes list, select genes that have 
+
+* adjusted P-value < 0.05 in the differential expression analysis from primary cells and either cell lines (Calu-3 or ACE2-expressing A549 cells, low-MOI infection; excluded genes with adjusted P = 0) or samples derived from COVID-19 patients
+* log2 fold change > 0.5 in absolute scale in primary cells and log2 fold change > 1 in absolute scale in the other experiment 
+
+```{r}
+overlap <- c(intersect(primary$GeneName, cellline_calu3$GeneName),
+             intersect(primary$GeneName, cellline_a549_ace2$GeneName),
+             intersect(primary$GeneName, human$Gene_name))
+overlap <- sort(unique(overlap))
+  
+overlap_df <- data.frame("gene_name" = overlap,
+                        "Source" = "Imbalanced host response to SARS-CoV-2 drives development of COVID-19",
+                        "Experimental.Evidence" = NA,
+                        "ref" = "Blanco-Melo et al. 2020",
+                        stringsAsFactors = F)
+
+overlap_df$Experimental.Evidence <- sapply(overlap_df$gene_name, function(x) {
+  if (x %in% cellline_calu3$GeneName & !x %in% cellline_a549_ace2$GeneName & !x %in% human$Gene_name) {
+    return("primary_cell;calu3")
+  }
+  if (!x %in% cellline_calu3$GeneName & x %in% cellline_a549_ace2$GeneName & !x %in% human$Gene_name) {
+    return("primary_cell;a549_ace2")
+  }
+  if (!x %in% cellline_calu3$GeneName & !x %in% cellline_a549_ace2$GeneName & x %in% human$Gene_name) {
+    return("primary_cell;covid19_patient")
+  }
+  if (x %in% cellline_calu3$GeneName & x %in% cellline_a549_ace2$GeneName & !x %in% human$Gene_name) {
+    return("primary_cell;calu3;a549_ace2")
+  }
+  if (x %in% cellline_calu3$GeneName & !x %in% cellline_a549_ace2$GeneName & x %in% human$Gene_name) {
+    return("primary_cell;calu3;covid19_patient")
+  }
+  if (!x %in% cellline_calu3$GeneName & x %in% cellline_a549_ace2$GeneName & x %in% human$Gene_name) {
+    return("primary_cell;a549_ace2;covid19_patient")
+  }
+  if (x %in% cellline_calu3$GeneName & x %in% cellline_a549_ace2$GeneName & x %in% human$Gene_name) {
+    return("primary_cell;calu3;a549_ace2;covid19_patient")
+  }
+})
+
+```
+
+* `r length(overlap)` genes for final candidate gene set
+
+## Overview of the candidate gene list
+
+```{r}
+filt <- candidate_genes[!candidate_genes$ref %in% "Blanco-Melo et al. 2020",]
+filt$Source <- sub(", Imbalanced host response to SARS-CoV-2 drives development of COVID-19", "", filt$Source)
+filt$Source <- sub("Imbalanced host response to SARS-CoV-2 drives development of COVID-19, ", "", filt$Source)
+filt$ref <- sub("Blanco-Melo et al. 2020; ", "", filt$ref)
+filt$Experimental.Evidence <- ""
+
+# combine two datasets
+final <- rbind(filt, overlap_df)
+
+# merge genes that were already present into one
+mult <- names(table(final$gene_name)[table(final$gene_name) > 1])
+for (g in mult) {
+  idx <- which(final$gene_name %in% mult)
+  final <- final %>% 
+    add_row("gene_name" = g,
+            "Source" = paste(final[idx, "Source"], collapse = ", "),
+            "Experimental.Evidence" = paste(sapply(final[idx, "Experimental.Evidence"], function(x) {
+              if (x %in% "") {
+                ""
+                } else {
+                  x
+                }
+              }), collapse = ""),
+            "ref" = paste(final[idx, "ref"], collapse = ", ")) %>% 
+    slice(-idx)
+}
+
+rm(mult, filt, candidate_genes)
+
+```
+
+* Note: gene names are matching gencode v33 (changes for genes that are listed by one of their synonym)
+
+```{r rename-candidate-genes}
+# gene_id's from gencode
+no_match <- final$gene_name[!final$gene_name %in% gene_annot$gene_name]
+
+ensembl <- biomaRt::useMart(biomart = 'ENSEMBL_MART_ENSEMBL', dataset = "hsapiens_gene_ensembl")
+#listAttributes(ensembl)
+#listFilters(ensembl)
+gene_mart <- biomaRt::getBM(attributes = c('ensembl_gene_id', 'hgnc_symbol', 'external_synonym'), 
+                            filters = c('external_synonym'), 
+                            values = no_match, 
+                            mart = ensembl)
+
+# some manual additions (No match for: "LOC100294145" "MGC12916")
+gene_mart <- gene_mart %>% 
+  add_row("ensembl_gene_id" = "ENSG00000186205", "hgnc_symbol" = "MARC1", "external_synonym" = "MTARC1")
+
+gene_mart$in_genocde <- ifelse(gene_mart$ensembl_gene_id %in% gene_annot$gene_id, 1, 0) 
+gene_mart <- gene_mart[gene_mart$in_genocde %in% 1,]
+stopifnot(gene_mart$hgnc_symbol %in% gene_annot$gene_name)
+stopifnot(gene_mart$ensembl_gene_id == gene_annot[match(gene_mart$hgnc_symbol, gene_annot$gene_name), "gene_id"])
+
+# remove genes that don't have a match in gencode
+cat("Genes that do not have a match from gencode - ", paste(no_match[!no_match %in% gene_mart$external_synonym], collapse = ", "), fill = T)
+final <- final[!final$gene_name %in% no_match[!no_match %in% gene_mart$external_synonym], ]
+
+# change gene_names
+final[match(gene_mart$external_synonym, final$gene_name), "gene_name"] <- gene_mart$hgnc_symbol
+
+```
+
+```{r candidate-gene-names}
+stopifnot(final$gene_name %in% gene_annot$gene_name)
+
+final$gene_id <- gene_annot[match(final$gene_name, gene_annot$gene_name), "gene_id"]
+final$gene_type <- gene_annot[match(final$gene_name, gene_annot$gene_name), "gene_type"]
+
+# re-order columns
+final <- final[, c("gene_id", "gene_name", "gene_type", "ref", "Source", "Experimental.Evidence")]
+final <- final[!duplicated(final), ]
+colnames(final)[5:6] <- c("ref_title", "experimental_evidence")
+
+final <- final[order(final$gene_name),]
+
+# are these genes expressed in spiromics
+final$expressed_in_spiromics <- ifelse(final$gene_id %in% norm_expr$gene_id, 1, 0)
+
+# save
+write.table(final, file = here("candidate_genes", paste0("covid19_candidate_genes_v", version + 1, ".txt")), col.names = T, row.names = F, sep = "\t", quote = F)
+
+```
+
+#### Final list of candidate genes
+
+* __`r nrow(final)`__ candidate genes in the filtered list
+
+```{r fig-candidate-genes, fig.width=6, fig.height=4}
+listInput <- lapply(refs, function(x) which(grepl(x, final$ref_title)))
+upset(fromList(listInput), order.by = "freq", mainbar.y.max = 350,
+      sets = c("Gordon et al. 2020", "Blanco-Melo et al. 2020", "COVID-19 Cell Atlas", "Gassen et al. 2020", "Hoffmann et al. 2020", "Wang et al. 2020"),
+      keep.order = TRUE,
+      mainbar.y.label = "Intersection size of\nCOVID-19 related genes", sets.x.label = "# COVID-19 related genes")
+
+# sapply(listInput, length)
+
+```
+
+Gene biotype
+
+```{r}
+addmargins(table("gene biotype" = final$gene_type, "is expressed in spiromics" = final$expressed_in_spiromics))
+```
+
+Candidate genes not expressed in SPIROMICS bronchial epithelium samples:
+
+```{r}
+kable(final[final$expressed_in_spiromics %in% 0, ], row.names = F) %>% 
+   kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14)
+  
+```
+
+```{r fig-candidate-genes-only-expressed, fig.width=6, fig.height=4}
+final <- final[final$expressed_in_spiromics %in% 1, ]
+listInput <- lapply(refs, function(x) which(grepl(x, final$ref_title)))
+upset(fromList(listInput), order.by = "freq", mainbar.y.max = 350,
+      sets = c("Gordon et al. 2020", "Blanco-Melo et al. 2020", "COVID-19 Cell Atlas", "Gassen et al. 2020", "Hoffmann et al. 2020", "Wang et al. 2020"),
+      keep.order = TRUE,
+      mainbar.y.label = "Intersection size of\nCOVID-19 related genes", sets.x.label = "# COVID-19 related genes")
+
+# sapply(listInput, length)
+
+```
