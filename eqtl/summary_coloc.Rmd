@@ -1,0 +1,273 @@
+---
+title: "Summary of colocalization analysis"
+author: "Silva Kasela"
+date: "06/01/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+options(knitr.table.format = "html") 
+
+library(here)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(pheatmap)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+
+theme_set(theme_classic() +
+          theme(plot.title = element_text(size = 14),
+	              plot.subtitle = element_text(size = 12),
+                axis.title = element_text(size = 12),
+                axis.title.y = element_text(vjust = 2),
+                axis.title.x = element_text(vjust = -0.75),
+                axis.text = element_text(size = 11),
+                strip.text = element_text(size = 11),
+                legend.title = element_text(size = 12),
+                legend.text = element_text(size = 11)))
+
+# Colors to match color scheme in the phenoscanner figures
+colors <- list(efo_category_parent = c("dodgerblue2", "#E31A1C", "green4", "#6A3D9A", "#FF7F00", "black", "skyblue2", "#FB9A99", "grey50"))
+names(colors$efo_category_parent) <- c("Anthropometric measurement", "Hematological measurement", "Immune system disorder", "Metabolic disorder/measurement", "Neurological disorder", "Other disease/trait", "Pulmonary function measurement", "Respiratory disease", "Uncategorised") 
+
+```
+
+For colocalization analysis including eQTL data for genes that have an eQTL implicated in 
+
+* blood cell traits (_EFO parent category = Hematological measurement_)
+* pulmonary function traits (_EFO parent category = Pulmonary function measurement_)
+* respiratory system disease (_EFO parent category = Respiratory disease_)
+
+Colocalization analysis:
+
+* Using both the standard method and coloc-cond/mask
+    + When using coloc-cond/mask, then using `method = mask` in the GWAS dataset and LD from the matching 1000G population (_for example, if discovery population is of European ancestry, then using 1000G CEU population for calculating LD_)
+    + When using coloc-cond/mask, then using `method = single` in the eQTL dataset if the eGene does not have multiple independent eVaraints, otherwise using conditional p-values (_all the eGenes tested in coloc had only one independent eVariant_)
+* Coloc in 500-kb region centered on lead eQTL (+/-250 kb from the lead variant)
+* Priors p1 = 1e-4, p2 = 1e-4, p3 = 5e-6
+
+```{r read-in-data}
+coloc_methods <- c("single", "mask")
+res_coloc <- lapply(coloc_methods, function(coloc_method) {
+  # Read in files
+  files <- list.files(path = here("coloc", "result", "eqtl", coloc_method), pattern = ".txt")
+  res <- lapply(files, function(x) read.table(here("coloc", "result", "eqtl", coloc_method, x), header = T, sep = "\t", stringsAsFactors = F))
+  res <- do.call(rbind, res)
+  
+  # Write out merged file
+  write.table(res, file = here("coloc", "result", "eqtl", coloc_method, "coloc_results_merged.txt"), col.names = T, row.names = F, sep = "\t", quote = F)
+  
+  # Clean data - delete empty rows => could not get data for these traits through gwas catalog API or from UKBB
+  cat(coloc_method, ": Could not get data from GWAS API or UKBB for ", sum(is.na(res$PP.H4.abf)), "eGene-GWAS traits pairs", fill = T)
+  # res[is.na(res$PP.H4.abf), c("phenotype_id", "gwas", "efo_category", "efo_category_parent")]
+  res <- res %>% 
+    filter(!is.na(PP.H4.abf)) %>% 
+    mutate(id = paste0(phenotype_id, "_", qtl_lead_snv, "_", gwas)) %>% 
+    data.frame(stringsAsFactors = F)
+  
+  if (coloc_method %in% "mask") {
+    # Take maximum PP4 across independent eQTL
+    res <- res %>%
+      group_by(id) %>% 
+      mutate(max_pp4 = max(PP.H4.abf)) %>% 
+      ungroup() %>% 
+      arrange(desc(PP.H4.abf)) %>% 
+      distinct(id, .keep_all = TRUE) %>% 
+      arrange(phenotype_id, efo_category_parent, efo_category, gwas) %>% 
+      data.frame(stringsAsFactors = F)
+    
+    # double-check
+    stopifnot(res$PP.H4.abf == res$max_pp4)
+  }
+  return(res)
+})
+
+names(res_coloc) <- coloc_methods
+
+```
+
+## Coloc-standard
+
+```{r}
+i <- 1
+res <- res_coloc[[coloc_methods[i]]]
+```
+
+* Number of eQTLs/genes and GWAS trait pairs used in colocalization analysis - `r nrow(res)`
+
+```{r fig-coloc-standard, fig.width=10, fig.height=8}
+trait_annot <- res[, c("efo_category", "efo_category_parent")]
+trait_annot <- trait_annot[!duplicated(trait_annot), ]
+rownames(trait_annot) <- paste0(trait_annot$efo_category_parent, "_", trait_annot$efo_category)
+
+# Format data for pheatmap
+plot_data <- res %>%
+  mutate(trait = paste0(efo_category_parent, "_", efo_category)) %>% 
+  select(phenotype_id, trait, PP.H4.abf) %>%
+  pivot_wider(names_from = trait, values_from = PP.H4.abf) %>%
+  column_to_rownames(var = "phenotype_id") %>% 
+  as.matrix()
+
+# Order columns
+count_cols <- apply(plot_data, 2, function(x) sum(!is.na(x)))
+count_cols_df <- data.frame(count = count_cols,
+                            trait = names(count_cols),
+                            efo_category_parent = sapply(names(count_cols), function(x) unlist(strsplit(x, "_"))[1]),
+                            stringsAsFactors = F)
+count_cols_df <- count_cols_df[order(count_cols_df$efo_category_parent, count_cols_df$trait, count_cols_df$count),]
+
+# Order row
+count_rows <- lapply(sort(unique(trait_annot$efo_category_parent)), function(x) {
+  apply(plot_data[, grep(x, colnames(plot_data))], 1, function(x) sum(!is.na(x)))
+})
+count_rows <- do.call(rbind, count_rows)
+rownames(count_rows) <- sort(unique(trait_annot$efo_category_parent))
+count_rows <- data.frame(t(count_rows), stringsAsFactors = F)
+count_rows <- count_rows[order(-count_rows$Anthropometric.measurement,
+                               -count_rows$Hematological.measurement,
+                               -count_rows$Uncategorised),]
+
+trait_annot$efo_category <- NULL
+colors[["efo_category_parent"]] <-  (colors[["efo_category_parent"]])[sort(unique(trait_annot$efo_category_parent))]
+breaks <- seq(0, 1, by = 0.01)
+pheatmap(mat = plot_data[rownames(count_rows), count_cols_df$trait],
+         scale = "none",
+         color = colorRampPalette(viridis::viridis(100))(length(breaks)),
+         breaks = breaks,
+         na_col = "grey95",
+         annotation_col = trait_annot,
+         annotation_colors = colors,
+         cluster_rows = F, cluster_cols = F)
+
+pheatmap(mat = plot_data[rownames(count_rows), count_cols_df$trait],
+         scale = "none",
+         color = colorRampPalette(viridis::viridis(100))(length(breaks)),
+         breaks = breaks,
+         na_col = "grey95",
+         annotation_col = trait_annot,
+         annotation_colors = colors,
+         cluster_rows = F, cluster_cols = F,
+         filename = here("coloc", "result", "eqtl", "fig_summary", paste0("coloc_", coloc_methods[1], "_heatmap.covid19_related_egenes.selected_efo_categories.pdf")),
+         width = 10, height = 8)
+
+```
+
+* Number of genes that have eQTLs colocalized with at least one GWAS trait - __`r length(unique(res[res$PP.H4.abf > 0.5, "phenotype_id"]))` genes__: `r paste(unique(res[res$PP.H4.abf > 0.5, "phenotype_id"]), collapse = ", ")`
+* Number of genes that have eQTLs colocalized with at least one blood cell trait, pulmonary function trait, or respiratory system disease - __`r length(unique(res[res$PP.H4.abf > 0.5 & res$efo_category_parent %in% c("Hematological measurement", "Pulmonary function measurement", "Respiratory disease"), "phenotype_id"]))` genes__: `r paste(unique(res[res$PP.H4.abf > 0.5 & res$efo_category_parent %in% c("Hematological measurement", "Pulmonary function measurement", "Respiratory disease"), "phenotype_id"]), collapse = ", ")`
+
+```{r}
+kable(res[res$PP.H4.abf > 0.5 & res$efo_category_parent %in% c("Hematological measurement", "Pulmonary function measurement", "Respiratory disease"), ], row.names = F) %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14) %>% 
+  scroll_box(width = "1000px", height = "200px")
+```
+
+## Coloc-cond/mask
+
+```{r}
+i <- 2
+res <- res_coloc[[coloc_methods[i]]]
+```
+
+* Number of eQTLs/genes and GWAS trait pairs used in colocalization analysis - `r nrow(res)`
+
+```{r fig-coloc-mask, fig.width=10, fig.height=8}
+trait_annot <- res[, c("efo_category", "efo_category_parent")]
+trait_annot <- trait_annot[!duplicated(trait_annot), ]
+rownames(trait_annot) <- paste0(trait_annot$efo_category_parent, "_", trait_annot$efo_category)
+
+# Format data for pheatmap
+plot_data <- res %>%
+  mutate(trait = paste0(efo_category_parent, "_", efo_category)) %>% 
+  select(phenotype_id, trait, PP.H4.abf) %>%
+  pivot_wider(names_from = trait, values_from = PP.H4.abf) %>%
+  column_to_rownames(var = "phenotype_id") %>% 
+  as.matrix()
+
+# Order columns
+count_cols <- apply(plot_data, 2, function(x) sum(!is.na(x)))
+count_cols_df <- data.frame(count = count_cols,
+                            trait = names(count_cols),
+                            efo_category_parent = sapply(names(count_cols), function(x) unlist(strsplit(x, "_"))[1]),
+                            stringsAsFactors = F)
+count_cols_df <- count_cols_df[order(count_cols_df$efo_category_parent, count_cols_df$trait, count_cols_df$count),]
+
+# Order row
+count_rows <- lapply(sort(unique(trait_annot$efo_category_parent)), function(x) {
+  apply(plot_data[, grep(x, colnames(plot_data))], 1, function(x) sum(!is.na(x)))
+})
+count_rows <- do.call(rbind, count_rows)
+rownames(count_rows) <- sort(unique(trait_annot$efo_category_parent))
+count_rows <- data.frame(t(count_rows), stringsAsFactors = F)
+count_rows <- count_rows[order(-count_rows$Anthropometric.measurement,
+                               -count_rows$Hematological.measurement,
+                               -count_rows$Uncategorised),]
+
+trait_annot$efo_category <- NULL
+colors[["efo_category_parent"]] <-  (colors[["efo_category_parent"]])[sort(unique(trait_annot$efo_category_parent))]
+breaks <- seq(0, 1, by = 0.01)
+pheatmap(mat = plot_data[rownames(count_rows), count_cols_df$trait],
+         scale = "none",
+         color = colorRampPalette(viridis::viridis(100))(length(breaks)),
+         breaks = breaks,
+         na_col = "grey95",
+         annotation_col = trait_annot,
+         annotation_colors = colors,
+         cluster_rows = F, cluster_cols = F)
+
+pheatmap(mat = plot_data[rownames(count_rows), count_cols_df$trait],
+         scale = "none",
+         color = colorRampPalette(viridis::viridis(100))(length(breaks)),
+         breaks = breaks,
+         na_col = "grey95",
+         annotation_col = trait_annot,
+         annotation_colors = colors,
+         cluster_rows = F, cluster_cols = F,
+         filename = here("coloc", "result", "eqtl", "fig_summary", paste0("coloc_", coloc_methods[i], "_heatmap.covid19_related_egenes.selected_efo_categories.pdf")),
+         width = 10, height = 8)
+
+```
+
+* Number of genes that have eQTLs colocalized with at least one GWAS trait - __`r length(unique(res[res$PP.H4.abf > 0.5, "phenotype_id"]))` genes__ : `r paste(unique(res[res$PP.H4.abf > 0.5, "phenotype_id"]), collapse = ", ")`
+* Number of genes that have eQTLs colocalized with at least one blood cell trait, pulmonary function trait, or respiratory system disease - __`r length(unique(res[res$PP.H4.abf > 0.5 & res$efo_category_parent %in% c("Hematological measurement", "Pulmonary function measurement", "Respiratory disease"), "phenotype_id"]))` genes__: `r paste(unique(res[res$PP.H4.abf > 0.5 & res$efo_category_parent %in% c("Hematological measurement", "Pulmonary function measurement", "Respiratory disease"), "phenotype_id"]), collapse = ", ")`
+
+```{r}
+kable(res[res$PP.H4.abf > 0.5 & res$efo_category_parent %in% c("Hematological measurement", "Pulmonary function measurement", "Respiratory disease"), ], row.names = F) %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14) %>% 
+  scroll_box(width = "1000px", height = "200px")
+```
+
+## Coloc-standard and Coloc-cond/mask
+
+```{r fig-coloc-compare, fig.width=4, fig.height=4, out.width='50%', fig.show='hold'}
+single <- res_coloc[["single"]]
+single$id_2 <- paste0(single$phenotype_id, "_", single$gwas)
+
+mask <- res_coloc[["mask"]]
+mask$id_2 <- paste0(mask$phenotype_id, "_", mask$gwas)
+
+id_2 <- single$id_2
+stopifnot(id_2 %in% mask$id_2)
+
+plot_data <- data.frame(pp4_single = single$PP.H4.abf,
+                        pp4_mask = mask[match(id_2, mask$id_2), "PP.H4.abf"],
+                        id = id_2,
+                        stringsAsFactors = F)
+                        
+g <- ggplot(plot_data, aes(x = pp4_single, y = pp4_mask)) +
+  labs(title = "Compare PP estimates",
+       subtitle = "Coloc-standard VS coloc-cond/mask",
+       x = "PP4 from coloc-standard",
+       y = "Max PP4 from coloc-cond/mask") +
+  geom_point(pch = 21) +
+  geom_abline(slope = 1, intercept = 0) +
+  scale_x_continuous(limits = c(0,1)) +
+  scale_y_continuous(limits = c(0,1))
+g
+g +
+  geom_text(data = plot_data %>% filter(pp4_mask - pp4_single > 0.1), aes(label = id), vjust = -0.05, hjust = 0)
+
+```
+

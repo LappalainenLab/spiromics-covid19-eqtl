@@ -1,0 +1,233 @@
+---
+title: Regional association plots of eQTLs
+author: "Silva Kasela"
+date: "8/3/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.path = here::here("eqtl", "cis", "fig_regional_plots/"), dev = c('png', 'pdf'))
+
+library(here)
+library(arrow)
+library(dplyr)
+library(ggplot2)
+library(Gviz)
+library(biomaRt)
+library(kableExtra)
+
+# ggplot2 theme
+theme_set(theme_classic() +
+            theme(plot.title = element_text(size = 14),
+                  plot.subtitle = element_text(size = 12),
+                  axis.title = element_text(size = 12),
+                  axis.title.y = element_text(vjust = 2),
+                  axis.title.x = element_text(vjust = -0.75),
+                  axis.text = element_text(size = 11),
+                  strip.text = element_text(size = 11),
+                  legend.title = element_text(size = 12),
+                  legend.text = element_text(size = 11)))
+
+
+```
+
+```{r}
+eqtl <- read.table(here("eqtl", "cis", "spiromics.cis_eqtl.egenes.txt.gz"), header = T, sep = "\t", stringsAsFactors = F)
+
+```
+
+### Regional association plots of eQTLs for ACE2 and TMPRSS2
+
+```{r}
+gene_df <- data.frame("gene_id" = c("ENSG00000130234", "ENSG00000184012"),
+                      "gene_name" = c("ACE2", "TMPRSS2"),
+                      stringsAsFactors = F)
+
+```
+
+```{r}
+eqtl %>% 
+  filter(gene_id %in% gene_df$gene_id) %>% 
+  kable(row.names = FALSE) %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14)
+
+```
+
+```{r}
+chr <- c("chrX", "chr21")
+
+eqtl_data_list <- lapply(chr, function(chr) {
+  file <- here("eqtl", "cis", "allpairs", paste0("spiromics.cis_qtl_pairs.", chr, ".parquet"))
+  
+  dat <- read_parquet(file) %>% 
+    filter(phenotype_id %in% gene_df$gene_id) %>% 
+    mutate(gene_name = gene_df[match(phenotype_id, gene_df$gene_id), "gene_name"])
+  
+  dat$pos <- sapply(dat$variant_id, function(x) unlist(strsplit(x, "_"))[2])
+  dat$pos <- as.numeric(dat$pos)
+  return(dat)
+})
+
+```
+
+```{r fig-ace2-tmprss2, fig.width=5, fig.height=4, fig.show='hold'}
+for (i in 1:length(eqtl_data_list)) {
+  eqtl_data <- eqtl_data_list[[i]]
+  x_points <- seq(round(median(eqtl_data$pos) - 1e6, -6), median(eqtl_data$pos) + 1e6, 1e6/2) # define x-axis breaks
+
+  # eGene significance level
+  stats_egene <- eqtl[match(eqtl_data$gene_name[1], eqtl$gene_name), c("gene_name", "pval_nominal_threshold")]
+  
+  g <- ggplot(eqtl_data, aes(x = pos, y = -log10(pval_nominal))) +
+    labs(title = paste0("cis-eQTLs for ", eqtl_data$gene_name[1], " in bronchial epithelium"),
+           x = paste0("Position on ", chr[i], " (Mb)"),
+           y = bquote(-log[10] ~ "(eQTL P-value)")) +
+    geom_point(col = "grey20") +
+    #geom_hline(yintercept = -log10(1e-4), col = "indianred", lty = 2) +
+    geom_hline(data = stats_egene, aes(yintercept = -log10(pval_nominal_threshold)), col = "indianred", lty = 2) +
+    scale_x_continuous(breaks = x_points, labels = x_points/1e6, expand = expansion(mult = c(0.01, 0.01), add = c(0, 0))) +
+    scale_y_continuous(limits = c(0, 6), expand = expansion(mult = c(0.05, 0.2), add = c(0, 0)))
+  print(g)
+}
+  
+```
+
+* Gene track
+
+```{r fig-ace2-tmprss2-gene-track, fig.width=10, fig.height=3, fig.show='hold'}
+for (i in 1:length(eqtl_data_list)) {
+  eqtl_data <- eqtl_data_list[[i]]
+  # Gene diagrams
+  gen <- "hg38"
+  xmin <- min(eqtl_data$pos)
+  xmax <- max(eqtl_data$pos)
+  
+  # ideogram
+  itrack <- IdeogramTrack(genome = gen, chromosome = chr[i])
+  
+  # coordinates
+  gtrack <- GenomeAxisTrack()
+  
+  ## highlight lead gwas variant
+  #atrack <- AnnotationTrack(genome = gen, chromosome = chr, start = gwas_pos, end = gwas_pos + 1, name = "SNP", col = "royalblue",  cex.title = 1.1)
+  
+  # ensembl genes track
+  bm <- useMart(biomart = "ENSEMBL_MART_ENSEMBL", dataset = "hsapiens_gene_ensembl")
+  # limit the returned gene models to RefSeq models only - filter=list(with_refseq_mrna=TRUE), 
+  biomtrack <- BiomartGeneRegionTrack(genome = gen, chromosome = chr[i], start = xmin, end = xmax, name = "Genes", biomart = bm, cex.title = 1.1, stacking = "squish")
+  
+  # plot the union of all the exons as a sort of meta-transcript
+  plotTracks(list(itrack, gtrack, biomtrack), collapseTranscripts = "meta", transcriptAnnotation = "symbol", stackHeight = 0.25, from = xmin, to = xmax, cex.main = 1.1)
+}
+
+```
+
+
+### Regional association plots of eQTLs in the chr3 locus associated with COVID-19 GWAS
+
+At locus 3p21.31, the association signal related to COVID-19 spanned the genes SLC6A20, LZTFL1, CCR9, FYCO1, CXCR6, and XCR1
+
+* COVID-19 GWAS data: ANA_B2_V2 - hospitalized covid vs. population (round 3)
+    + Lead variant: chr3_45867532_A_G_b38
+* COVID-19 GWAS data: ANA_C2_V2 - covid vs. population (round 3)
+    + Lead variant: chr3_45867022_C_G_b38
+* Ellinghaus et al. 2020, severe COVID-19 with respiratory failure
+    + Lead variant: chr3_45834967_G_GA_b38
+
+```{r}
+gene_df <- data.frame("gene_id" = c("ENSG00000163817", "ENSG00000163818", "ENSG00000173585", "ENSG00000163820", "ENSG00000172215", "ENSG00000173578"),
+                        "gene_name" = c("SLC6A20", "LZTFL1", "CCR9", "FYCO1", "CXCR6", "XCR1"),
+                        stringsAsFactors = F)
+
+lead_gwas_id <- c("chr3_45867022_C_G_b38", # ANA_C2_V2
+                  "chr3_45867532_A_G_b38", # ANA_B2_V2
+                  "chr3_45834967_G_GA_b38") # Ellinghaus et al
+
+```
+
+```{r}
+eqtl %>% 
+  filter(gene_id %in% gene_df$gene_id) %>% 
+  kable(row.names = FALSE) %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14)
+
+```
+
+```{r}
+chr <- "chr3"
+file <- here("eqtl", "cis", "allpairs", paste0("spiromics.cis_qtl_pairs.", chr, ".parquet"))
+
+eqtl_data <- read_parquet(file) %>% 
+  filter(phenotype_id %in% gene_df$gene_id) %>% 
+  mutate(gene_name = gene_df[match(phenotype_id, gene_df$gene_id), "gene_name"],
+         gene_name_f = factor(gene_name, levels = gene_df$gene_name))
+
+eqtl_data$pos <- sapply(eqtl_data$variant_id, function(x) unlist(strsplit(x, "_"))[2])
+eqtl_data$pos <- as.numeric(eqtl_data$pos)
+
+```
+
+```{r fig-chr3, fig.width=5, fig.height=12}
+x_points <- seq(round(median(eqtl_data$pos) - 1e6, -6), median(eqtl_data$pos) + 1e6, 1e6/2) # define x-axis breaks
+
+# highlight lead GWAS variants
+top_variant <- eqtl_data %>%
+  filter(variant_id %in% lead_gwas_id)
+
+# eGene significance level
+stats_egene <- eqtl[match(gene_df$gene_name, eqtl$gene_name), c("gene_name", "pval_nominal_threshold")]
+stats_egene[is.na(stats_egene$pval_nominal_threshold), "pval_nominal_threshold"] <- 1
+stats_egene$gene_name_f <- factor(gene_df$gene_name, levels = gene_df$gene_name)
+
+# individual y_max => need to create blank data
+min_p <- tapply(eqtl_data$pval_nominal, eqtl_data$gene_name, min)
+min_p <- min_p[levels(eqtl_data$gene_name_f)]
+blank_data <- data.frame(pos = median(eqtl_data$pos),
+                         pval_nominal = c(ifelse(min_p > 10**-6 | is.na(min_p) , 10**-6, min_p), rep(1, length(min_p))),
+                         gene_name_f = factor(rep(levels(eqtl_data$gene_name_f), 2), levels = levels(eqtl_data$gene_name_f)),
+                         stringsAsFactors = F)
+  
+ggplot(eqtl_data, aes(x = pos, y = -log10(pval_nominal))) +
+  labs(title = "cis-eQTLs in bronchial epithelium",
+         x = paste0("Position on ", chr, " (Mb)"),
+         y = bquote(-log[10] ~ "(eQTL P-value)")) +
+  geom_point(col = "grey20") +
+  #geom_hline(yintercept = -log10(1e-4), col = "indianred", lty = 2) +
+  geom_hline(data = stats_egene, aes(yintercept = -log10(pval_nominal_threshold)), col = "indianred", lty = 2) +
+  geom_point(data = top_variant, aes(col = variant_id)) +
+  geom_blank(data = blank_data) +
+  scale_x_continuous(breaks = x_points, labels = x_points/1e6, expand = expansion(mult = c(0.01, 0.01), add = c(0, 0))) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.2), add = c(0, 0))) +
+  facet_wrap(~gene_name_f, drop = FALSE, nrow = nrow(gene_df), scales = "free_y") +
+  theme(legend.position = "top",
+        legend.direction = "vertical")
+
+```
+
+* Gene track
+
+```{r fig-chr3-gene-track, fig.width=10, fig.height=3}
+# Gene diagrams
+gen <- "hg38"
+xmin <- min(eqtl_data$pos)
+xmax <- max(eqtl_data$pos)
+
+# ideogram
+itrack <- IdeogramTrack(genome = gen, chromosome = chr)
+
+# coordinates
+gtrack <- GenomeAxisTrack()
+
+## highlight lead gwas variant
+#atrack <- AnnotationTrack(genome = gen, chromosome = chr, start = gwas_pos, end = gwas_pos + 1, name = "SNP", col = "royalblue",  cex.title = 1.1)
+
+# ensembl genes track
+bm <- useMart(biomart = "ENSEMBL_MART_ENSEMBL", dataset = "hsapiens_gene_ensembl")
+# limit the returned gene models to RefSeq models only - filter=list(with_refseq_mrna=TRUE), 
+biomtrack <- BiomartGeneRegionTrack(genome = gen, chromosome = chr, start = xmin, end = xmax, name = "Genes", biomart = bm, cex.title = 1.1, stacking = "squish")
+
+# plot the union of all the exons as a sort of meta-transcript
+plotTracks(list(itrack, gtrack, biomtrack), collapseTranscripts = "meta", transcriptAnnotation = "symbol", stackHeight = 0.25, from = xmin, to = xmax, cex.main = 1.1)
+
+```
+

@@ -1,0 +1,490 @@
+---
+title: "PheWAS with PhenoScanner"
+author: "Silva Kasela"
+date: "06/01/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+options(knitr.table.format = "html") 
+
+library(here)
+library(data.table)
+#library(devtools)
+#install_github("phenoscanner/phenoscanner")
+library(phenoscanner)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(pheatmap)
+
+theme_set(theme_classic() +
+          theme(plot.title = element_text(size = 15),
+	              plot.subtitle = element_text(size = 14),
+                axis.title = element_text(size = 14),
+                axis.title.y = element_text(vjust = 2),
+                axis.title.x = element_text(vjust = -0.75),
+                axis.text = element_text(size = 13),
+                strip.text = element_text(size = 13),
+                legend.title = element_text(size = 14),
+                legend.text = element_text(size = 13)))
+
+```
+
+```{r read-in-data}
+# Candidate genes list
+version <- "v11"
+candidate_genes <- read.table(here("candidate_genes", paste0("covid19_candidate_genes_", version, ".txt")), header = T, sep = "\t", stringsAsFactors = F)
+
+# eGenes qval < 0.05
+eqtl <- read.table(here("eqtl", "cis", "spiromics.cis_eqtl.egenes.txt.gz"), header = T, sep = "\t", stringsAsFactors = F)
+eqtl <- eqtl[eqtl$gene_id %in% candidate_genes$gene_id & eqtl$qval < 0.05,]
+
+# lookup table to get all former rsIDs too
+lookup <- fread(here("genotype", "freeze9.pass_only.spiromics_144samples.maf05.biallelic.lookup_table.all_ids.txt.gz"), header = T, sep = "\t", stringsAsFactors = F, data.table = F)
+lookup <- lookup[lookup$variant_id %in% eqtl$variant_id, ]
+lookup_rsid <- unlist(strsplit(lookup$rs_id_dbSNP151_GRCh38p7.all_ids, ","))
+
+# EFO traits categories
+# https://www.ebi.ac.uk/gwas/docs/file-downloads : GWAS to EFO mappings
+# website to check the EFO terms - https://www.ebi.ac.uk/ols/ontologies/efo/terms
+efo_traits <- read.table("ftp://ftp.ebi.ac.uk/pub/databases/gwas/releases/latest/gwas-efo-trait-mappings.tsv", header = T, sep = "\t", stringsAsFactors = F, quote = "")
+efo_traits$efo_uri <- sapply(efo_traits$EFO.URI, function(x) unlist(strsplit(x, "/"))[5])
+
+```
+
+Lookup cis-eQTLs related to COVID-19 genes using PhenoScanner v2:
+
+* Using `r paste0("covid19_candidate_genes_", version, ".txt")`
+* Significant lead cis-eQTLs related to COVID-19 genes (qvalue < 0.05) - `r nrow(eqtl)` gene-variant pairs
+* rsIDs to lookup (including also former rsIDs) - `r length(lookup_rsid)`
+    
+```{r lookup, eval=FALSE}
+lookup[grepl(",", lookup$rs_id_dbSNP151_GRCh38p7.all_ids),]
+```
+
+## PhenoScanner
+
+> PhenoScanner V2
+Cardiovascular Epidemiology Unit
+University of Cambridge
+Email: phenoscanner@gmail.com
+
+> Information: Each user can query a maximum of 500 SNPs, 50 genes or 50 regions per hour. For large batch queries, please ask to download the data from www.phenoscanner.medschl.cam.ac.uk/data.
+Terms of use: Please refer to the terms of use when using PhenoScanner V2 (www.phenoscanner.medschl.cam.ac.uk/about). If you use the results from PhenoScanner in a publication or presentation, please cite all of the relevant references of the data used and the PhenoScanner publications: www.phenoscanner.medschl.cam.ac.uk/about/#citation.
+
+* Note: UKB summary stats are from 2017 - phase 1 results
+* Note: PhenoScanner outputs associations with P-value < 1e-05
+
+```{r scan-phenoscanner, eval=FALSE}
+scanner_batch1 <- phenoscanner(snpquery = lookup_rsid[1:100])
+scanner_batch2 <- phenoscanner(snpquery = lookup_rsid[101:length(lookup_rsid)])
+
+# save results
+# dir.create(here("eqtl", "cis", "phenoscanner"))
+save(scanner_batch1, scanner_batch2, file = here("eqtl", "cis", "phenoscanner", paste0("results_indep_eqtls.candidate_genes_", version, ".RData")))
+```
+
+```{r}
+load(here("eqtl", "cis", "phenoscanner", paste0("results_indep_eqtls.candidate_genes_", version, ".RData")))
+
+# SNPs
+snps <- rbind(scanner_batch1$snps, scanner_batch2$snps)
+
+# Results
+res <- rbind(scanner_batch1$results, scanner_batch2$results)
+res$p <- as.numeric(res$p)
+res$variant_id <- sapply(res$rsid, function(x){
+  lookup[grep(x, lookup$rs_id_dbSNP151_GRCh38p7.all_ids), "variant_id"]
+})
+res$gene_name <- eqtl[match(res$variant_id, eqtl$variant_id), "gene_name"]
+res$gene_id <- eqtl[match(res$variant_id, eqtl$variant_id), "gene_id"]
+
+# double-check
+foo <- res[, c("rsid", "gene_name")]
+foo <- foo[!duplicated(foo),]
+stopifnot(nrow(foo) == length(unique(paste0(foo$rsid, "_", foo$gene_name))))
+
+```
+
+* Clean results - keep only one entry per gene and trait
+    + If both height_GIANT and height_UKB, keep UKB entry
+    + Or keep entry from the newest study
+
+```{r clean}
+# Clean results file - get rid of duplicate entries, e.g. same trait from two different studies
+res$check <- paste0(res$gene_name, "_", res$trait)
+double <- table(res$check)[table(res$check) > 1]
+
+delete <- NULL
+# Manually check one-by-one
+
+## CTSB_Parkinsons disease - keep the latest study
+## res[grepl("Parkinson", res$trait),]
+delete <- c(delete, 86, 87, 99)
+
+## CTSF_Height - keep UKB entry
+## res[res$check %in% "CTSF_Height", ]
+delete <- c(delete, 173, 174)
+
+## FBN1_Height
+## res[res$check %in% "FBN1_Height", ]
+delete <- c(delete, 253)
+
+## FGFR1OP_Rheumatoid arthritis - select East Asian (not Mixed)
+## res[res$check %in% "FGFR1OP_Rheumatoid arthritis", ]
+delete <- c(delete, 75)
+
+## IDE_Type II diabetes
+## res[res$check %in% "IDE_Type II diabetes", ]
+delete <- c(delete, 113)
+
+## POLA2_Height
+## res[res$check %in% "POLA2_Height", ]
+delete <- c(delete, 139)
+
+## SUN2_Pulse rate
+## res[res$check %in% "SUN2_Pulse rate", ]
+delete <- c(delete, 315)
+
+## TBKBP1_Height
+## res[res$check %in% "TBKBP1_Height", ]
+delete <- c(delete, 275)
+
+# Cleaned dataframe
+res <- res[-delete,]
+  
+```
+
+```{r clean-efo}
+# check if we have match for all the EFO terms
+# table(res$efo[!res$efo %in% efo_traits$efo_uri])
+#                                  - EFO_0003956;EFO_0005854;EFO_0000274                         EFO_0004586             EFO_0004705;EFO_1001055                         EFO_0007056 
+#                                141                                   1                                  57                                   3                                   3 
+res$efo_category <- res$efo_category.unmodified <- efo_traits[match(res$efo, efo_traits$efo_uri), "EFO.term"]
+res$efo_category_parent <- res$efo_category_parent.unmodified <- efo_traits[match(res$efo, efo_traits$efo_uri), "Parent.term"]
+
+# EFO_0004503 - hematological measurement
+# EFO_0004586 - complete blood cell count
+res[res$efo %in% "EFO_0004586", "efo_category"] <- "Complete blood cell count"
+res[res$efo %in% "EFO_0004586", "efo_category_parent"] <- "Hematological measurement"
+
+# efo -
+res[res$efo %in% "-", "efo_category"] <- "uncategorised"
+res[res$efo %in% "-", "efo_category_parent"] <- "Uncategorised"
+
+# EFO_0004705;EFO_1001055 - EFO_1000627 (thyroid disease) - Endocrine system disease (EFO_0001379)
+res[res$efo %in% "EFO_0004705;EFO_1001055", "efo_category"] <- "thyroid disease"
+res[res$efo %in% "EFO_0004705;EFO_1001055", "efo_category_parent"] <- "Endocrine system disease"
+
+# EFO_0007056 - clinical treatment
+res[res$efo %in% "EFO_0007056", "efo_category"] <- "clinical treatment"
+res[res$efo %in% "EFO_0007056", "efo_category_parent"] <- "Uncategorised"
+
+# EFO_0003956;EFO_0005854;EFO_0000274 - Hayfever, allergic rhinitis or eczema
+res[res$efo %in% "EFO_0003956;EFO_0005854;EFO_0000274", "efo_category"] <- "allergic rhinitis"
+res[res$efo %in% "EFO_0003956;EFO_0005854;EFO_0000274", "efo_category_parent"] <- "Respiratory system disease"
+
+# Trait - "No blood clot, bronchitis, emphysema, asthma, rhinitis, eczema or allergy diagnosed by doctor"
+# This is probably NEALE2_6152_100 - None of the above | blood clot, dvt, bronchitis, emphysema, asthma, rhinitis, eczema, allergy diagnosed by doctor
+res[res$trait %in% "No blood clot, bronchitis, emphysema, asthma, rhinitis, eczema or allergy diagnosed by doctor", "efo_category"] <- "uncategorised"
+res[res$trait %in% "No blood clot, bronchitis, emphysema, asthma, rhinitis, eczema or allergy diagnosed by doctor", "efo_category_parent"] <- "Uncategorised"
+res[res$trait %in% "No blood clot, bronchitis, emphysema, asthma, rhinitis, eczema or allergy diagnosed by doctor", "trait"] <- "No blood clot, bronchitis, ..."
+
+#foo = res[, c("efo_category", "efo_category_parent")]
+#foo = foo[!duplicated(foo),]
+#foo = foo[order(foo$efo_category_parent, foo$efo_category),]
+
+res$efo_category_parent.smaller_categories <- res$efo_category_parent
+
+#### Some more broad categories into finer ones
+res[res$efo_category %in% "asthma", "efo_category_parent"] <- "Respiratory system disease"
+res[res$efo_category %in% c("forced expiratory volume", "vital capacity", "peak expiratory flow"), "efo_category_parent"] <- "Pulmonary function measurement"
+res[res$efo_category %in% c("fat body mass", "grip strength measurement"), "efo_category_parent"] <- "Anthropometric measurement"
+res[grepl("mass", res$trait), "efo_category_parent"] <- "Anthropometric measurement"
+res[grepl("\\bfat\\b", res$trait), "efo_category_parent"] <- "Anthropometric measurement"
+res[grepl("water mass", res$trait), "efo_category"] <- "whole body water mass"
+res[res$trait %in% "Whole body fat mass", "efo_category"] <- "fat body mass"
+res[res$trait %in% c("Trunk fat-free mass", "Whole body fat-free mass"), "efo_category"] <- "lean body mass"
+res[res$trait %in% c("Trunk fat percentage"), "efo_category"] <- "body fat percentage"
+res[res$efo_category_parent %in% "Body measurement", "efo_category_parent"] <- "Anthropometric measurement"
+res[res$efo_category %in% "age at menarche", "efo_category_parent"] <- "Other measurement" # Temporal measurement
+res[res$efo_category %in% "base metabolic rate measurement", "efo_category_parent"] <- "Metabolic rate measurement"
+res[res$efo_category %in% "heel bone mineral density",  "efo_category_parent"] <- "Other measurement" # Bone
+
+#### Combine some of the groups together, and rename the groups to fit on the model
+res$efo_category_parent <- sub("system disease", "disease", res$efo_category_parent)
+res[grepl("Metabolic", res$efo_category_parent), "efo_category_parent"] <- "Metabolic disorder/measurement"
+res[res$efo_category_parent %in% "Digestive system disorder", "efo_category_parent"] <- "Other disease/trait"
+res[grepl("Other", res$efo_category_parent), "efo_category_parent"] <- "Other disease/trait"
+res[res$efo_category_parent %in% "Biological process", "efo_category_parent"] <- "Other disease/trait"
+# NEALE2_40001_C459	Icd10: c45.9 mesothelioma, unspecified | underlying (primary) cause of death
+res[res$efo_category_parent %in% "Cancer", "efo_category_parent"] <- "Other disease/trait"
+res[res$efo_category_parent %in% "Cardiovascular measurement", "efo_category_parent"] <- "Other disease/trait"
+res[res$efo_category_parent %in% "Endocrine disease", "efo_category_parent"] <- "Other disease/trait"
+
+res$check <- NULL
+res$efo_category <- gsub("'", "", res$efo_category) # to avoid mistakes reading in this datafile later
+res$efo_category.unmodified <- gsub("'", "", res$efo_category.unmodified)
+
+```
+
+```{r clean-efo-hematological-traits}
+# Group hematological traits
+res[grepl("white", res$trait, ignore.case = TRUE) & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "White cells"
+res[grepl("granulocyte", res$trait, ignore.case = TRUE) & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "Granulocyte"
+res[grepl("eosinophil", res$trait, ignore.case = TRUE) & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "Eosinophil"
+res[grepl("monocyte", res$trait, ignore.case = TRUE) & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "Monocyte"
+res[grepl("platelet", res$trait, ignore.case = TRUE) & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "Platelet"
+res[grepl("neutrophil", res$trait, ignore.case = TRUE) & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "Neutrophil"
+res[grepl("basophil", res$trait, ignore.case = TRUE) & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "Basophil"
+res[grepl("lymphocyte", res$trait, ignore.case = TRUE) & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "Lymphocyte"
+res[grepl("reticulocyte", res$trait, ignore.case = TRUE) & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "Reticulocyte"
+res[grepl("red", res$trait, ignore.case = TRUE) & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "Red cells"
+res[grepl("hemoglobin", res$trait, ignore.case = TRUE) & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "Hemoglobin"
+res[res$trait %in% c("Hematocrit", "Mean corpuscular volume") & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "Red cells volume"
+res[grepl("Sum", res$trait) & res$efo_category_parent == "Hematological measurement", "efo_category"] <- "Sum cell counts"
+
+```
+
+```{r}
+# write out
+write.table(res, here("eqtl", "cis", "phenoscanner", paste0("phewas_phenoscanner.covid19_related_egenes_", version, ".txt")), col.names = T, row.names = F, sep = "\t", quote = F)
+```
+
+#### Summary
+
+* Number eQTLs that have PheWAS associations - __`r length(unique(res$gene_name))` eQTLs and `r length(unique(res$trait))` phenotypes__
+
+```{r}
+check <- res[, c("rsid", "gene_name")]
+check <- check[!duplicated(check),]
+stopifnot(paste0(check$rsid, "_", check$gene_name) %in% paste0(eqtl$rs_id_dbSNP151_GRCh38p7, "_", eqtl$gene_name))
+```
+
+* Categories that have the most associations
+    + Some smaller categories merged together
+
+```{r}
+res %>%
+  group_by(efo_category_parent) %>% 
+  count() %>% 
+  arrange(desc(n)) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14)
+  
+```
+
+* Hematological measurement consists of the following blood cell traits
+
+```{r}
+res %>%
+  filter(efo_category_parent == "Hematological measurement") %>% 
+  select(trait, efo_category, efo_category_parent) %>% 
+  group_by(trait, efo_category, efo_category_parent) %>% 
+  count() %>% 
+  ungroup() %>% 
+  arrange(trait) %>%
+  kable() %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14)
+
+```
+
+* Number of genes that have eQTLs implicated in 1) blood cell traits, 2) pulmonary function trait, and/or 3) respiratory system disease - __`r length(unique(res[res$efo_category_parent %in% c("Hematological measurement", "Pulmonary function measurement", "Respiratory disease"), "gene_name"]))` genes__
+
+```{r}
+res %>%
+  filter(efo_category_parent %in% c("Hematological measurement", "Pulmonary function measurement", "Respiratory disease")) %>% 
+  select(gene_name, efo_category_parent) %>% 
+  distinct %>% 
+  arrange(gene_name) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14)
+  
+```
+
+#### PheWAS plots
+
+Highlighting here some of the more interesting PheWAS asscoaitions with some of the eGenes. See `r paste0("eqtl/cis/phenoscanner/phewas_plot.covid19_related_egenes_", version, ".pdf")` for all the PheWAS plots.
+
+* CTSW - weight and some cell types
+* IFITM3 - assocated with different cell type traits
+* MEPCE - associated with different platelet traits
+
+```{r fig-phewas, fig.width=20, fig.height=5, warning=FALSE, fig.show='hold'}
+# colors: https://stackoverflow.com/questions/9563711/r-color-palettes-for-many-data-classes
+c25 <- c(
+  "dodgerblue2", "#E31A1C", # red
+  "green4",
+  "#6A3D9A", # purple
+  "#FF7F00", # orange
+  "black",
+  #"gold1",
+  "skyblue2", "#FB9A99", # lt pink
+  #"palegreen2",
+  #"#CAB2D6", # lt purple
+  #"#FDBF6F", # lt orange
+  "grey50", #"khaki2",
+  "maroon", "orchid1", "deeppink1", "blue1", "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown"
+)
+colors <- c25[1:length(unique(res$efo_category_parent))]
+
+sapply(c("CTSW", "IFITM3","MEPCE"), function(x) {
+  sel <- res %>%
+    mutate(efo_category_parent = factor(efo_category_parent)) %>%
+    filter(gene_name %in% x) %>% 
+    select(rsid, gene_name, trait, efo_category_parent, p) %>% 
+    complete(efo_category_parent, fill = list(trait = "trait", p = NA)) %>%
+    mutate(efo_category_parent_facet = as.numeric(efo_category_parent)) %>% 
+    mutate(efo_category_parent = factor(paste0(as.numeric(efo_category_parent), ". ", efo_category_parent), 
+                                        levels = unique(paste0(as.numeric(efo_category_parent), ". ", efo_category_parent))))
+   g <- ggplot(data = sel, aes(x = trait, y = -log10(p), col = efo_category_parent)) +
+    labs(title = "PheWAS: traits associated with lead cis-eQTLs",
+         subtitle = paste0(x, " - ", paste(sort(unique(pull(sel, rsid))), collapse = ", ")),
+         x = "",
+         col = "") +
+    geom_hline(yintercept = -log10(5e-08), lty = 2, col = "grey75") +
+    geom_point() +
+    geom_text(aes(label = trait), vjust = 0, hjust = 0.5, nudge_y = 0.25, show.legend = F, size = 4) +
+    scale_y_continuous(limits = c(5, max(15, max(-log10(res[res$gene_name %in% x, "p"])) + 2))) +
+    scale_color_manual(values = colors) +
+    facet_grid(. ~ efo_category_parent_facet, scales = "free_x", space = "free_x", switch = "x") +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          strip.background.x = element_blank(),
+          legend.position = "top")
+  print(g)
+})
+```
+
+
+```{r phewas-plot, eval=FALSE}
+## PheWAS plots
+pdf(here("eqtl", "cis", "phenoscanner", paste0("phewas_plot.covid19_related_egenes_", version, ".pdf")), onefile = TRUE, width = 20, height = 5)
+sapply(sort(unique(res$gene_name)), function(x) {
+  sel <- res %>%
+    mutate(efo_category_parent = factor(efo_category_parent)) %>%
+    filter(gene_name %in% x) %>% 
+    select(rsid, gene_name, trait, efo_category_parent, p) %>% 
+    complete(efo_category_parent, fill = list(trait = "trait", p = NA)) %>%
+    mutate(efo_category_parent_facet = as.numeric(efo_category_parent)) %>% 
+    mutate(efo_category_parent = factor(paste0(as.numeric(efo_category_parent), ". ", efo_category_parent), 
+                                        levels = unique(paste0(as.numeric(efo_category_parent), ". ", efo_category_parent))))
+   g <- ggplot(data = sel, aes(x = trait, y = -log10(p), col = efo_category_parent)) +
+    labs(title = "PheWAS: traits associated with lead cis-eQTLs",
+         subtitle = paste0(x, " - ", paste(sort(unique(pull(sel, rsid))), collapse = ", ")),
+         x = "",
+         col = "") +
+    geom_hline(yintercept = -log10(5e-08), lty = 2, col = "grey75") +
+    geom_point() +
+    geom_text(aes(label = trait), vjust = 0, hjust = 0.5, nudge_y = 0.25, show.legend = F, size = 4) +
+    scale_y_continuous(limits = c(5, max(15, max(-log10(res[res$gene_name %in% x, "p"])) + 2))) +
+    scale_color_manual(values = colors) +
+    facet_grid(. ~ efo_category_parent_facet, scales = "free_x", space = "free_x", switch = "x") +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          strip.background.x = element_blank(),
+          legend.position = "top")
+  print(g)
+})
+dev.off()
+```
+
+#### PheWAS heatmap
+
+```{r}
+plot_data <- res %>%
+  select(gene_name, trait, p) %>%
+  mutate(p = -log10(p)) %>% 
+  pivot_wider(names_from = trait, values_from = p) %>%
+  column_to_rownames(var = "gene_name") %>% 
+  as.matrix()
+
+```
+
+```{r fig-phewas-heatmap, fig.width=20, fig.height=10}
+trait_annot <- res[, c("trait", "efo_category_parent")]
+trait_annot <- trait_annot[!duplicated(trait_annot), ]
+rownames(trait_annot) <- trait_annot$trait
+
+# Order columns
+count_cols <- apply(plot_data, 2, function(x) sum(!is.na(x)))
+count_cols_df <- data.frame(count = count_cols,
+                            trait = names(count_cols),
+                            efo_category_parent = trait_annot[match(names(count_cols), trait_annot$trait), "efo_category_parent"],
+                            stringsAsFactors = F)
+count_cols_df <- count_cols_df[order(count_cols_df$efo_category_parent, count_cols_df$trait, count_cols_df$count),]
+
+# Order row
+count_rows <- lapply(sort(unique(trait_annot$efo_category_parent)), function(x) {
+  apply(plot_data[, trait_annot[trait_annot$efo_category_parent %in% x, "trait"]], 1, function(x) sum(!is.na(x)))
+})
+count_rows <- do.call(rbind, count_rows)
+rownames(count_rows) <- sort(unique(trait_annot$efo_category_parent))
+count_rows <- data.frame(t(count_rows), stringsAsFactors = F)
+count_rows <- count_rows[order(-count_rows$Anthropometric.measurement,
+                               -count_rows$Hematological.measurement,
+                               -count_rows$Uncategorised),]
+
+# List with colors for each annotation.
+colors <- list(efo_category_parent = colors)
+names(colors$efo_category_parent) <- sort(unique(trait_annot$efo_category_parent))
+
+trait_annot$trait <- NULL
+pheatmap(mat = plot_data[rownames(count_rows), count_cols_df$trait],
+         scale = "none",
+         color = viridis::viridis(100),
+         na_col = "grey95",
+         annotation_col = trait_annot,
+         annotation_colors = colors,
+         cluster_rows = F, cluster_cols = F)
+
+pheatmap(mat = t(plot_data[rownames(count_rows), count_cols_df$trait]),
+         scale = "none",
+         color = viridis::viridis(100),
+         na_col = "grey95",
+         annotation_row = trait_annot,
+         annotation_colors = colors,
+         cluster_rows = F, cluster_cols = F,
+         filename = here("eqtl", "cis", "phenoscanner", paste0("phewas_heatmap.covid19_related_egenes_", version, ".all_genes.pdf")),
+         width = 13, height = 15)
+
+```
+
+Heatmap including only genes that have >1 association
+
+```{r fig-phewas-heatmap-selected-genes, fig.width=20, fig.height=10}
+sel_genes <- res[, c("trait", "gene_name")]
+sel_genes <- sel_genes[!duplicated(sel_genes),]
+sel_genes <- table(sel_genes$gene_name)
+sel_genes <- sel_genes[sel_genes > 1]
+
+count_rows <- count_rows[rownames(count_rows) %in% names(sel_genes),]
+
+pheatmap(mat = plot_data[rownames(count_rows), count_cols_df$trait],
+         scale = "none",
+         color = viridis::viridis(100),
+         na_col = "grey95",
+         annotation_col = trait_annot,
+         annotation_colors = colors,
+         cluster_rows = F, cluster_cols = F)
+
+pheatmap(mat = plot_data[rownames(count_rows), count_cols_df$trait],
+         scale = "none",
+         color = viridis::viridis(100),
+         na_col = "grey95",
+         annotation_col = trait_annot,
+         annotation_colors = colors,
+         cluster_rows = F, cluster_cols = F,
+         filename = here("eqtl", "cis", "phenoscanner", paste0("phewas_heatmap.covid19_related_egenes_", version, ".selected_genes.pdf")),
+         width = 20, height = 10)
+
+```

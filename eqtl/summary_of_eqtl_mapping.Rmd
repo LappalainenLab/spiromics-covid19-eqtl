@@ -1,0 +1,348 @@
+---
+title: "Summary of cis-eQTL mapping"
+author: "Silva Kasela"
+date: "5/21/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.path = here::here("eqtl", "cis", "fig_summary/"), dev = c('png', 'pdf'))
+options(knitr.table.format = "html") 
+
+library(here)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggridges)
+library(knitr)
+library(kableExtra)
+library(UpSetR)
+
+theme_set(theme_classic() +
+          theme(plot.title = element_text(size = 14),
+	              plot.subtitle = element_text(size = 12),
+                axis.title = element_text(size = 12),
+                axis.title.y = element_text(vjust = 2),
+                axis.title.x = element_text(vjust = -0.75),
+                axis.text = element_text(size = 11),
+                strip.text = element_text(size = 11),
+                legend.title = element_text(size = 12),
+                legend.text = element_text(size = 11)))
+
+```
+
+## Overview of cis-eQTL mapping in SPIROMICS
+
+```{r read-in-data}
+eqtl <- read.table(here("eqtl", "cis", "spiromics.cis_eqtl.egenes.txt.gz"), header = T, sep = "\t", stringsAsFactors = F)
+eqtl$id <- paste0(eqtl$gene_id, "_", eqtl$variant_id)
+eqtl_signif <- eqtl[eqtl$qval < 0.05,]
+
+afc <- read.table(here("eqtl", "cis", "afc", "spiromics.afc_top_eqtl.txt.gz"), header = T, sep = "\t", stringsAsFactors = F)
+# filter out cases where log2_afc = 6.643856 (cap value)
+afc <- afc[abs(afc$log2_aFC) < 6.64385, ]
+afc$id <- paste0(afc$pid, "_", afc$sid)
+
+version <- "v11"
+candidate_genes <- read.table(here("candidate_genes", paste0("covid19_candidate_genes_", version, ".txt")), header = T, sep = "\t", stringsAsFactors = F)
+
+```
+
+* Number of genes with eQTLs at FDR 5% - `r sum(eqtl$qval < 0.05)` eGenes
+
+```{r}
+eqtl %>% 
+  filter(qval < 0.05) %>% 
+  group_by(gene_type) %>% 
+  summarize(n = n()) %>% 
+  add_row(gene_type = "total", n = sum(eqtl$qval < 0.05)) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14)
+
+```
+
+* Summary of effect size for significant eQTLs on log2 scale
+
+```{r fig-afc-density, fig.width=4.5, fig.height=4}
+summary(abs(afc[match(eqtl_signif$id, afc$id), "log2_aFC"]))
+
+all_median <- median(abs(afc[match(eqtl$id, afc$id), "log2_aFC"]), na.rm = T)
+signif_median <- median(abs(afc[match(eqtl_signif$id, afc$id), "log2_aFC"]), na.rm = T)
+
+rbind(eqtl, eqtl_signif) %>% 
+  mutate(log2_afc = afc[match(id, afc$id), "log2_aFC"]) %>% 
+  mutate(group = rep(c("All eQTLs", "Signif eQTLs"), c(nrow(eqtl), nrow(eqtl_signif)))) %>% 
+  ggplot(aes(x = abs(log2_afc), fill = group)) +
+  labs(x = bquote("Absolute value of eQTL effect size (|"~log[2]~"aFC|)"),
+       y = "Density",
+       fill = "") +
+  geom_density(alpha = 0.25) +
+  #geom_vline(xintercept = signif_median) +
+  #geom_vline(xintercept = all_median) +
+  theme(legend.position = "top")
+
+```
+
+* Summary of effect size for significant eQTLs not on log2 scale
+
+```{r}
+2**summary(abs(afc[match(eqtl_signif$id, afc$id), "log2_aFC"]))[1:6]
+
+```
+
+## eQTLs for COVID-19 candidate genes
+
+Candidate genes from different sources:
+
+* Hoffmann et al. 2020, Cell, _SARS-CoV-2 Cell Entry Depends on ACE2 and TMPRSS2 and Is Blocked by a Clinically Proven Protease Inhibitor_
+* Blanco-Melo et al. 2020, Cell, _Imbalanced host response to SARS-CoV-2 drives development of COVID-19_
+* Gordon et al. 2020, Nature, _A SARS-CoV-2 protein interaction map reveals targets for drug repurposing_
+* Gassen et al. 2020, bioRxiv, _Analysis of SARS-CoV-2-controlled autophagy reveals spermidine, MK-2206, and niclosamide as putative antiviral therapeutics_
+* Wang et al. 2020, bioRxiv, _SARS-CoV-2 invades host cells via a novel route: CD147-spike protein_
+* COVID-19 Cell Atlas, https://www.covid19cellatlas.org/
+
+Summary
+
+* Number of unique candidate genes - __`r length(candidate_genes$gene_name)`__
+* Number of genes from the candidate genes list that are expressed in the SPIROMICS samples: __`r sum(candidate_genes$expressed_in_spiromics)` out of `r nrow(candidate_genes)`__
+
+```{r}
+candidate_genes <- candidate_genes[candidate_genes$expressed_in_spiromics %in% 1, ]
+candidate_genes$is_signif_eqtl <- ifelse(candidate_genes$gene_id %in% eqtl_signif$gene_id, 1, 0)
+candidate_genes_signif <- candidate_genes[candidate_genes$is_signif_eqtl %in% 1, ]
+```
+
+```{r}
+addmargins(table(candidate_genes$gene_type))
+candidate_genes[!candidate_genes$gene_type %in% "protein_coding",]
+```
+
+* Number of genes from the candidate genes list that are significant eGenes in the SPIROMICS samples: __`r sum(candidate_genes$is_signif_eqtl)` out of `r nrow(candidate_genes)`__
+
+```{r fig-candidate-genes-signif, fig.width=6, fig.height=4}
+refs <- c("Hoffmann et al. 2020", "Blanco-Melo et al. 2020", "Gordon et al. 2020", "Gassen et al. 2020", "Wang et al. 2020", "COVID-19 Cell Atlas")
+
+listInput <- lapply(refs, function(x) which(grepl(x, candidate_genes_signif$ref)))
+names(listInput) <- refs
+upset(fromList(listInput), order.by = "freq",
+      sets = c("Gordon et al. 2020", "Blanco-Melo et al. 2020", "COVID-19 Cell Atlas", "Gassen et al. 2020", "Hoffmann et al. 2020", "Wang et al. 2020"),
+      keep.order = TRUE,
+      mainbar.y.label = "Intersection size of\nCOVID-19 related eGenes", sets.x.label = "# COVID-19 related eGenes")
+
+sapply(listInput, length)
+
+```
+
+```{r fig-candidate-genes-signif-adjust-scale, fig.width=6, fig.height=4, results='hide'}
+upset(fromList(listInput), order.by = "freq", mainbar.y.max = 350,
+      sets = c("Gordon et al. 2020", "Blanco-Melo et al. 2020", "COVID-19 Cell Atlas", "Gassen et al. 2020", "Hoffmann et al. 2020", "Wang et al. 2020"),
+      keep.order = TRUE,
+      mainbar.y.label = "Intersection size of\nCOVID-19 related eGenes", sets.x.label = "# COVID-19 related eGenes")
+
+```
+
+## aFC for the candidate genes
+
+```{r}
+stopifnot(afc$id %in% eqtl$id)
+
+eqtl <- eqtl %>%
+  mutate(log2_aFC = afc[match(id, afc$id), "log2_aFC"]) %>%
+  mutate(log2_aFC_lower = afc[match(id, afc$id), "log2_aFC_lower"]) %>%
+  mutate(log2_aFC_upper = afc[match(id, afc$id), "log2_aFC_upper"]) %>%
+  mutate(candidate_gene = ifelse(gene_id %in% candidate_genes$gene_id, 1, 0)) %>%
+  mutate(signif_egene = ifelse(qval < 0.05, 1, 0)) %>%
+  mutate(maf_category = cut(eqtl$maf, breaks = c(0.05, 0.1, 0.2, 0.3, 0.4, 0.5)))
+
+addmargins(table("Candidate gene" = eqtl$candidate_gene, "significant eGene" = eqtl$signif_egene)) # 108/496 candidate genes are significant eGenes
+
+```
+
+```{r suppl-table, eval=FALSE}
+# summary stats of eQTLs for covid-19-related genes
+repl_other <- read.table(here("eqtl", "cis", "spiromics.cis_eqtl.egenes.discovered_in_gtex_eqtlgen.txt"), header = T, sep = "\t", stringsAsFactors = F)
+stopifnot(repl_other$gene_id %in% eqtl$gene_id)
+
+out <- eqtl
+out$tested_in_eqtlgen <- out$tested_in_gtex_v8.lung <- out$tested_in_gtex_v8 <- NA
+out[match(repl_other$gene_id, out$gene_id), "tested_in_gtex_v8"] <- repl_other$discovered_in_gtex
+out[match(repl_other$gene_id, out$gene_id), "tested_in_gtex_v8.lung"] <- repl_other$discovered_in_gtex.lung
+out[match(repl_other$gene_id, out$gene_id), "tested_in_eqtlgen"] <- repl_other$discovered_in_eqtlgen
+out$id <- NULL
+out$maf_category <- NULL
+data.table::fwrite(out, file = here("eqtl", "cis", "spiromics.cis_eqtl.egenes.effect_size.discovered_in_gtex_eqtlgen.txt.gz"), col.names = T, row.names = F, sep = "\t", quote = F)
+
+# eQTLs for covid-19-related genes
+out <- out[out$candidate_gene %in% 1, ]
+write.table(out, file = here("eqtl", "cis", "spiromics.cis_eqtl.egenes.effect_size.discovered_in_gtex_eqtlgen.covid19_related_genes.txt"), col.names = T, row.names = F, sep = "\t", quote = F)
+
+```
+
+```{r fig-afc-candidate-genes, fig.width=45, fig.height=5}
+# All candidate genes
+eqtl %>%
+  filter(candidate_gene %in% 1) %>%
+  mutate(ref_study = candidate_genes[match(gene_id, candidate_genes$gene_id), "ref"]) %>% 
+  mutate("Hoffmann et al. 2020" = ifelse(grepl("Hoffmann et al. 2020", ref_study), 1, 0)) %>% 
+  mutate("Blanco-Melo et al. 2020" = ifelse(grepl("Blanco-Melo et al. 2020", ref_study), 1, 0)) %>% 
+  mutate("Gordon et al. 2020" = ifelse(grepl("Gordon et al. 2020", ref_study), 1, 0)) %>% 
+  mutate("Gassen et al. 2020" = ifelse(grepl("Gassen et al. 2020", ref_study), 1, 0)) %>% 
+  mutate("Wang et al. 2020" = ifelse(grepl("Wang et al. 2020", ref_study), 1, 0)) %>% 
+  mutate("COVID-19 Cell Atlas" = ifelse(grepl("COVID-19 Cell Atlas", ref_study), 1, 0)) %>% 
+  pivot_longer(cols = c("Hoffmann et al. 2020", "Blanco-Melo et al. 2020", "Gordon et al. 2020", "Gassen et al. 2020", "Wang et al. 2020", "COVID-19 Cell Atlas"), names_to = "study", values_to = "count") %>%
+  filter(count == 1) %>% 
+  ggplot(aes(x = gene_name, y = log2_aFC, ymin = log2_aFC_lower, ymax = log2_aFC_upper, col = as.factor(signif_egene))) +
+     labs(title = paste0("COVID-19 candidate genes (n = ", sum(eqtl$candidate_gene), ")"),
+          x = "Candidate genes",
+          y = bquote(log[2]~ "aFC"),
+          col = "Significant eGene (q-value < 0.05)") +
+     geom_pointrange(size = 0.25) +
+     facet_grid(. ~ study, scales = "free_x", space = "free_x") +
+     geom_hline(yintercept = 0, lty = 2, col = "grey75") +
+     scale_color_manual(values = c("grey75", "grey25")) +
+     scale_y_continuous(breaks = seq(-4, 4, 1)) +
+     scale_x_discrete(expand = c(0, 5)) +
+     theme(legend.position = "top",
+           axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 6))
+
+```
+
+```{r fig-afc-candidate-egenes, fig.width=5, fig.height=14}
+eqtl %>%
+  filter(candidate_gene %in% 1) %>%
+  filter(signif_egene %in% 1) %>%
+  mutate(gene_name = forcats::fct_reorder(gene_name, desc(gene_name))) %>% 
+  ggplot(aes(x = gene_name, y = log2_aFC, ymin = log2_aFC_lower, ymax = log2_aFC_upper)) +
+  labs(title = paste0("COVID-19 candidate eGenes (n = ", sum(eqtl$candidate_gene & eqtl$signif_egene), ")"),
+       x = "Candidate genes",
+       y = bquote(log[2]~ "aFC and 95% CI"),
+       col = "Significant eGene (q-value < 0.05)") +
+  geom_rect(aes(xmax = 11, xmin = 20, ymin = -3.1, ymax = 4.5), fill = "grey95", alpha = 0.8) +
+  geom_rect(aes(xmax = 31, xmin = 40, ymin = -3.1, ymax = 4.5), fill = "grey95", alpha = 0.8) +
+  geom_rect(aes(xmax = 51, xmin = 60, ymin = -3.1, ymax = 4.5), fill = "grey95", alpha = 0.8) +
+  geom_rect(aes(xmax = 71, xmin = 80, ymin = -3.1, ymax = 4.5), fill = "grey95", alpha = 0.8) +
+  geom_rect(aes(xmax = 91, xmin = 100, ymin = -3.1, ymax = 4.5), fill = "grey95", alpha = 0.8) +
+  geom_pointrange(size = 0.5, col = "grey25") +
+  geom_hline(yintercept = 0, lty = 1, col = "grey75", size = 1.25) +
+  scale_y_continuous(breaks = seq(-3, 4, 1), expand = c(0, 0), limits = c(-3.1, 4.5)) +
+  scale_x_discrete(expand = c(0, 1.5)) +
+  coord_flip() +
+  theme(axis.text.y = element_text(size = 8))
+
+```
+
+```{r fig-afc-maf-candidate-egenes}
+# All candidate genes
+counts <- eqtl %>%
+  filter(candidate_gene %in% 1) %>%
+  filter(signif_egene %in% 1) %>%
+  group_by(maf_category) %>%
+  count() %>%
+  mutate(log2_aFC = -3) %>%
+  mutate(label = paste0("n = ", n))
+
+eqtl %>%
+  filter(candidate_gene %in% 1) %>%
+  filter(signif_egene %in% 1) %>%
+  ggplot(aes(x = log2_aFC, y = maf_category)) +
+  labs(title = paste0("COVID-19 candidate eGenes (n = ", sum(eqtl$candidate_gene & eqtl$signif_egene), ")"),
+       y = "MAF of eVariant",
+       x = bquote(log[2]~ "aFC")) +
+  geom_density_ridges(jittered_points = TRUE,
+                      position = position_points_jitter(width = 0.05, height = 0),
+                      point_shape = '|', point_size = 3, point_alpha = 1, alpha = 0.7) +
+  geom_text(data = counts, aes(x = log2_aFC, y = maf_category, label = label), nudge_y = 0.25) +
+  geom_vline(xintercept = 0, lty = 2, col = "grey25") +
+  scale_x_continuous(breaks = seq(-3, 3, 1))
+
+```
+
+## Concordance of DE and eQTL effect size
+
+* Ex vivo infection of primary cells (normal human bronchial epithelial (NHBE) cells)
+
+```{r}
+# Blanco-Melo et al, Table S2. Differential Gene Expression Analysis of Experiments Performed in NHBE Cells, Related to Figure 2, https://doi.org/10.1016/j.cell.2020.04.026
+primary_de <- openxlsx::read.xlsx(xlsxFile = here("candidate_genes", "blanco_melo_et_al", "1-s2.0-S009286742030489X-mmc2.xlsx"), sheet = 2, na.strings = "NaN")
+# old de supplementary file from biorxiv (https://www.biorxiv.org/content/10.1101/2020.03.24.004655v1 - Supplementary Table 6)
+primary_de_old <- openxlsx::read.xlsx(xlsxFile = here("candidate_genes", "blanco_melo_et_al", "preprint", "media-6.xlsx"), sheet = 2, na.strings = "NaN")
+stopifnot(primary_de_old$Gene_name %in% primary_de$GeneName)
+#plot(primary_de[match(primary_de_old$Gene_name, primary_de$GeneName), "SARS-CoV-2_L2FC"], primary_de_old$log2FoldChange)
+#plot(-log10(primary_de[match(primary_de_old$Gene_name, primary_de$GeneName), "padj_SARS-CoV-2"]), -log10(primary_de_old$padj))
+
+# Keep using the older file, because it has SE
+rm(primary_de)
+# Some gene names need to be updated to match the gene names from gencode
+# ENSG00000123815 COQ8B: ADCK4, COQ8, FLJ12229
+primary_de_old[match("ADCK4", primary_de_old$Gene_name), "Gene_name"] <- "COQ8B"
+# ENSG00000178202 POGLUT3: KDELC2, MGC33424
+primary_de_old[match("KDELC2", primary_de_old$Gene_name), "Gene_name"] <- "POGLUT3"
+stopifnot(candidate_genes_signif$gene_name %in% primary_de_old$Gene_name)
+
+# Filter
+primary_de_old <- primary_de_old[primary_de_old$Gene_name %in% candidate_genes_signif$gene_name,]
+addmargins(table(primary_de_old$status))
+primary_de_old <- primary_de_old[!is.na(primary_de_old$padj),]
+
+```
+
+Of the DE genes, `r sum(primary_de_old$padj < 0.05)` are significant candidate genes
+
+```{r fig-deg-fc-eqtl-afc, fig.width=7, fig.height=4, fig.show='50%'}
+plot_data <- eqtl %>%
+  filter(gene_name %in% primary_de_old$Gene_name) %>% 
+  mutate(deg_log2_fc = primary_de_old[match(gene_name, primary_de_old$Gene_name), "log2FoldChange"]) %>% 
+  mutate(deg_log2_fc_lower = deg_log2_fc - 1.96*primary_de_old[match(gene_name, primary_de_old$Gene_name), "lfcSE"]) %>% 
+  mutate(deg_log2_fc_upper = deg_log2_fc + 1.96*primary_de_old[match(gene_name, primary_de_old$Gene_name), "lfcSE"]) %>% 
+  mutate(deg_adj_pval = primary_de_old[match(gene_name, primary_de_old$Gene_name), "padj"]) %>% 
+  mutate(signif_deg = ifelse(deg_adj_pval < 0.05, 1, 0))
+
+# eqtl effect size >50% larger compared to DE effect size
+very_large_effect <- plot_data %>% 
+  filter(deg_adj_pval < 0.05) %>% 
+  filter(abs(log2_aFC) > 1.5*(abs(deg_log2_fc)))
+
+# eqtl effect size >50% of the DE effect size
+large_effect <- plot_data %>% 
+  filter(deg_adj_pval < 0.05) %>% 
+  filter(abs(log2_aFC) > 0.5*(abs(deg_log2_fc)))
+
+ggplot(data = plot_data, aes(x = log2_aFC, y = deg_log2_fc, fill = as.factor(signif_deg))) +
+  labs(y = bquote("DE effect size: " ~ log[2] ~ "FC and 95% CI"),
+       x = bquote("eQTL effect size: " ~ log[2] ~ "aFC and 95% CI"),
+       col = "Significant DE gene") +
+  geom_hline(yintercept = 0, lty = 2, col = "grey50") +
+  geom_vline(xintercept = 0, lty = 2, col = "grey50") +
+  geom_segment(aes(x = log2_aFC_lower, y = deg_log2_fc, xend = log2_aFC_upper, yend = deg_log2_fc), alpha = 0.3) +
+  geom_segment(aes(x = log2_aFC, y = deg_log2_fc_lower, xend = log2_aFC, yend = deg_log2_fc_upper), alpha = 0.3) +
+  geom_point(size = 2.2, pch = 21, col = "white") +
+  scale_x_continuous(breaks = seq(-2, 4, 1)) +
+  scale_fill_manual(values = c("grey50", "black")) +
+  theme(legend.position = "top")
+
+# with gene labels for extreme effect
+ggplot(data = plot_data, aes(x = log2_aFC, y = deg_log2_fc)) +
+  labs(y = bquote("DE effect size: " ~ log[2] ~ "FC and 95% CI"),
+       x = bquote("eQTL effect size: " ~ log[2] ~ "aFC and 95% CI"),
+       col = "Significant DE gene") +
+  geom_hline(yintercept = 0, lty = 2, col = "grey50") +
+  geom_vline(xintercept = 0, lty = 2, col = "grey50") +
+  geom_segment(aes(x = log2_aFC_lower, y = deg_log2_fc, xend = log2_aFC_upper, yend = deg_log2_fc), alpha = 0.3) +
+  geom_segment(aes(x = log2_aFC, y = deg_log2_fc_lower, xend = log2_aFC, yend = deg_log2_fc_upper), alpha = 0.3) +
+  geom_point(aes(fill = as.factor(signif_deg)), size = 2.2, pch = 21, col = "white") +
+  geom_label(data = large_effect, aes(label = gene_name), alpha = 0.5) +
+  scale_x_continuous(breaks = seq(-2, 4, 1)) +
+  scale_fill_manual(values = c("grey50", "black")) +
+  theme(legend.position = "top")
+  
+```
+
+In `r nrow(large_effect)` genes, the genetic regulatory effects were >50% of the magnitude of the differential expression induced by SARS-CoV-2 infection in normal human bronchial epithelial cells.
+
+`r nrow(very_large_effect)` genes have eQTL effect size >50% larger than the DE effect size
+
+```{r}
+kable(candidate_genes[candidate_genes$gene_name %in% very_large_effect$gene_name,], row.names = F) %>% 
+   kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14)
+```
+
