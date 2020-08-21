@@ -78,7 +78,7 @@ python3 -m tensorqtl ${GENO_PATH} ${PHENO_FILE} ${PREFIX} \
 
 ### aFC estimates
 
-Using allelic fold change (aFC) as the measure of eQTL effect size ([Mohammadi et al. 2017](10.1101/gr.216747.116)
+Using allelic fold change (aFC) as the measure of eQTL effect size ([Mohammadi et al. 2017](https://doi.org/10.1101/gr.216747.116))
 
 * gene count data that was normalized with DESeq size factors and log2 transformed
 * including the same covariates that were used in the cis-eQTL mapping
@@ -97,7 +97,7 @@ Overview of cis-eQTLs for COVID-19-related genes in bronchial epithelium
 summary_of_eqtl_mapping.Rmd
 ```
 
-Regional association plots for high interest genes (_ACE2_, _TMPRSS2_, and six genes from the 3p21.31 locus associated with COVID-19 by [Ellinghaus et al. 2020](10.1056/NEJMoa2020283) and [COVID-19 Host Genetics Initiative](https://www.covid19hg.org/))
+Regional association plots for high interest genes - _ACE2_, _TMPRSS2_, and the six genes from the 3p21.31 locus associated with COVID-19 ([Ellinghaus et al. 2020](https://doi.org/10.1056/NEJMoa2020283) and [COVID-19 Host Genetics Initiative](https://www.covid19hg.org/))
 
 ```bash
 summary_eqtl_regional_association_plots.Rmd
@@ -105,7 +105,7 @@ summary_eqtl_regional_association_plots.Rmd
 
 ## f) Downstream analyses
 
-Using PhenoScanner v2 ([Staley et al. 2016](10.1093/bioinformatics/btw373), [Kamat et al. 2019](10.1093/bioinformatics/btz469)) to search if the regulatory variants for COVID-19-related genes have phenotype associations and coloc ([Giambartolomei et al. 2014](https://doi.org/10.1371/journal.pgen.1004383), [Wallace 2020](https://doi.org/10.1371/journal.pgen.1008720)) to run colocalization analysis
+Using PhenoScanner v2 ([Staley et al. 2016](https://doi.org/10.1093/bioinformatics/btw373), [Kamat et al. 2019](https://doi.org/10.1093/bioinformatics/btz469)) to search if the regulatory variants for COVID-19-related genes have phenotype associations and coloc ([Giambartolomei et al. 2014](https://doi.org/10.1371/journal.pgen.1004383), [Wallace 2020](https://doi.org/10.1371/journal.pgen.1008720)) to run colocalization analysis
 
 ### PhenoScanner
 
@@ -144,7 +144,7 @@ GWAS summary statistics from the GWAS catalog and by the Neale Lab using UKBB da
 
 * Using the REST API to get GWAS summary statistics from the [GWAS Catalog](https://www.ebi.ac.uk/gwas/downloads/summary-statistics)
 * UKBB GWAS data from the [Neale Lab](http://www.nealelab.is/uk-biobank), using the GWAS round 2 results
-      + Note that UKBB GWAS data from the Neale Lab was in GRCh37, used `liftover` tool to lift the positions over to GRCh38
+   * Note that UKBB GWAS data from the Neale Lab was in GRCh37, used `liftover` tool to lift the positions over to GRCh38
 
 ```bash
 # https://docs.google.com/spreadsheets/d/1kvPoupSzsSFBNSztMzl04xMoSC3Kcx3CrjVf4yBmESU/edit?ts=5b5f17db#gid=227859291
