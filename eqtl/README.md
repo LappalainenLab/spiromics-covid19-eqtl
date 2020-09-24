@@ -51,6 +51,7 @@ python3 -m tensorqtl ${GENO_PATH} ${PHENO_FILE} ${PREFIX} \
     --covariates ${COV_FILE} \
     --window 1000000 \
     --output_dir ${OUT}
+
 ```
 
 -**_Mapping of conditionally independent cis-eQTLs with tensorQTL_**
@@ -75,6 +76,16 @@ python3 -m tensorqtl ${GENO_PATH} ${PHENO_FILE} ${PREFIX} \
     --seed 124456677 \
     --output_dir ${OUT}
 ```
+
+-**_Mapping of interaction cis-eQTLs with tensorQTL_**
+
+Using the `map_nominal` function and providing normalized cell type enrichment score from xCell ([Aran et al. 2017](https://doi.org/10.1186/s13059-017-1349-1)) as the `interaction_s` variable (model p ~ g + i + gi + cov).
+
+```bash
+python3 scripts/tensorqtl_cis_interaction.py --interaction ${CELL_TYPES}
+```
+
+
 
 ### aFC estimates
 
@@ -105,13 +116,13 @@ summary_eqtl_regional_association_plots.Rmd
 
 ### Replication of eQTLs in GTEx and lookup analysis in eQTLGen Consortium
 
-Summary stats of eQTLs fron the GTEx v8 [GTEx Consortium 2020()]
+Summary stats of eQTLs fron the GTEx v8 ([GTEx Consortium 2020](https://doi.org/10.1126/science.aaz1776))
 
 * Available from the [GTEx Portal](https://gtexportal.org/home/)
 
-Summary stats of eQTLs from the eQTLGen Consortium [Võsa et al. 2018](https://doi.org/10.1101/447367)
+Summary stats of eQTLs from the eQTLGen Consortium ([Võsa et al. 2018](https://doi.org/10.1101/447367))
 
-* Available from the [website](https://www.eqtlgen.org/) of the eQTLGen COnsortium
+* Available from the [website](https://www.eqtlgen.org/) of the eQTLGen Consortium
 
 ```bash
 summary_replicate_spiromics_eqtls.Rmd
