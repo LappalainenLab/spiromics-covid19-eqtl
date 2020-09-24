@@ -6,8 +6,8 @@ Using the following software/packages:
 
 * R/3.4.1
 * python/3.6.4
-* [tensorQTL](https://github.com/broadinstitute/tensorqtl)
-* [aFC](https://github.com/secastel/aFC)
+* [tensorQTL](https://github.com/broadinstitute/tensorqtl)/1.0.3
+* [aFC](https://github.com/secastel/aFC)/0.2
 * [phenoscanner](https://github.com/phenoscanner/phenoscanner) R package
 * [coloc](https://github.com/chr1swallace/coloc/tree/condmask) R package (`condmask` branch)
 
@@ -101,6 +101,20 @@ Regional association plots for high interest genes - _ACE2_, _TMPRSS2_, and the 
 
 ```bash
 summary_eqtl_regional_association_plots.Rmd
+```
+
+### Replication of eQTLs in GTEx and lookup analysis in eQTLGen Consortium
+
+Summary stats of eQTLs fron the GTEx v8 [GTEx Consortium 2020()]
+
+* Available from the [GTEx Portal](https://gtexportal.org/home/)
+
+Summary stats of eQTLs from the eQTLGen Consortium [Võsa et al. 2018](https://doi.org/10.1101/447367)
+
+* Available from the [website](https://www.eqtlgen.org/) of the eQTLGen COnsortium
+
+```bash
+summary_replicate_spiromics_eqtls.Rmd
 ```
 
 ## f) Downstream analyses
