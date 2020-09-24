@@ -1,0 +1,574 @@
+---
+title: "Replicate SPIROMICS eQTLs in GTEx v8"
+author: "Silva Kasela"
+date: "06/01/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.path = here::here("lookup_gtex", "fig_replication/"), dev = c('png', 'pdf')
+options(knitr.table.format = "html") 
+
+library(here)
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(qvalue)
+library(patchwork)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+#library(gprofiler2)
+
+theme_set(theme_classic() +
+          theme(plot.title = element_text(size = 14),
+	              plot.subtitle = element_text(size = 12),
+                axis.title = element_text(size = 12),
+                axis.title.y = element_text(vjust = 2),
+                axis.title.x = element_text(vjust = -0.75),
+                axis.text = element_text(size = 11),
+                strip.text = element_text(size = 11),
+                legend.title = element_text(size = 12),
+                legend.text = element_text(size = 11)))
+
+```
+
+## Data
+
+#### SPIROMICS eQTLs
+
+```{r read-in-data}
+# spiromics eQTLS at FDR 5%
+spiromics <- read.table(here("eqtl", "cis", "spiromics.cis_eqtl.egenes.txt.gz"), header = T, sep = "\t", stringsAsFactors = F)
+spiromics <- spiromics[spiromics$qval < 0.05,]
+spiromics$id <- paste0(spiromics$gene_id, "_", spiromics$variant_id)
+
+# gene annot from gencode
+gene_annot <- read.table(here("references", "gencode.v33.annotation.GRCh38.gene_id_name_type.txt"), header = T, sep = "\t", stringsAsFactors = F)
+
+```
+
+* No. of significant eGenes in SPIROMICS at FDR 5% - **`r nrow(spiromics)`** eGenes
+
+#### eQTLs from GTEx v8
+
+```{r read-in-gtex-data, eval=FALSE}
+files <- list.files("~/gtex_v8/eqtl/GTEx_Analysis_v8_eQTL_all_associations")
+gtex <- lapply(files, function(x) {
+  dat <- fread(paste0("~/gtex_v8/eqtl/GTEx_Analysis_v8_eQTL_all_associations/", x), header = T, sep = "\t", stringsAsFactors = F, data.table = F, nThread = 10)
+  dat <- dat[dat$variant_id %in% spiromics$variant_id,]
+  dat$id <- paste0(sapply(dat$gene_id, function(x) unlist(strsplit(x, "[.]"))[1]), "_", dat$variant_id)
+  dat <- dat[dat$id %in% spiromics$id, ]
+  return(dat)
+})
+names(gtex) <- sapply(files, function(x) unlist(strsplit(x, "[.]"))[1])
+save(gtex, file = here("lookup_gtex", "fig_replication", "spiromics_eqtls_in_gtex.allpairs.RData"))
+```
+
+```{r load-in-gtex-data}
+load(here("lookup_gtex", "fig_replication", "spiromics_eqtls_in_gtex.allpairs.RData"))
+
+# Add gene_id without [.]
+gtex <- lapply(gtex, function(x) {
+  x$gene_id.1 <- sapply(x$gene_id, function(y) unlist(strsplit(y, "[.]"))[1])
+  return(x)
+})
+
+# gtex colors and tissue abbreviations
+gtex_colors <- read.table("~/skasela/projects/gtex/gtex_colors.txt", header = T, sep = "\t", stringsAsFactors = F)
+gtex_colors$tissue_color_hex <- paste0("#", gtex_colors$tissue_color_hex)
+gtex_colors[gtex_colors$tissue_id %in% "Cells_Transformed_fibroblasts", 1:2] <- c("Cells_Cultured_fibroblasts", "Cells - Cultured fibroblasts")
+stopifnot(names(gtex) %in% gtex_colors$tissue_id)
+gtex_colors <- gtex_colors[match(names(gtex), gtex_colors$tissue_id),]
+```
+
+* eQTLs for `r length(gtex)` tissues from GTEx v8
+
+How many gene-variant pairs from SPIROMCS are present in different GTEx tissues? - On average `r mean(sapply(gtex, nrow))` gene-variant pairs
+
+How many gene-variant pairs from SPIROMCS are present in different GTEx tissues, but have nominal p-value >= 0.05 ? - On average `r mean(sapply(gtex, function(x) sum(x$pval_nominal >= 0.05)))` gene-variant pairs
+
+```{r fig-count-pairs-in-gtex, fig.height=8, fig.width=7.5, out.width='50%'}
+count <- sapply(gtex, nrow)
+data_plot <- data.frame(tissue = names(count),
+                        count = count,
+                        stringsAsFactors = F)
+
+# count of genes with nominal p-value > 0.05
+data_plot$count_not_signif_nominal_pval <- sapply(gtex, function(x) sum(x$pval_nominal >= 0.05))
+data_plot %>% 
+  mutate(count_signif_nominal_pval = count - count_not_signif_nominal_pval) %>% 
+  pivot_longer(cols = c("count_not_signif_nominal_pval", "count_signif_nominal_pval"), names_to = "group", values_to = "group_count") %>% 
+  mutate(group = ifelse(group == "count_not_signif_nominal_pval", "nominal P >= 0.05", "nominal P < 0.05")) %>% 
+  ggplot(aes(x = tissue, y = group_count, fill = group)) +
+  labs(title = "# eGene-eVariant pairs from SPIROMICS \nfound in GTEx",
+       x = "",
+       y = "Count",
+       fill = "") +
+  geom_col() +
+  geom_hline(yintercept = nrow(spiromics), lty = 1, col = "royalblue") +
+  geom_hline(yintercept = 1000, lty = 2, col = "grey25") +
+  geom_hline(yintercept = 2000, lty = 2, col = "grey25") +
+  geom_hline(yintercept = 3000, lty = 2, col = "grey25") +
+  geom_hline(yintercept = 4000, lty = 2, col = "grey25") +
+  coord_flip() +
+  theme(axis.text.y = element_text(size = 10),
+        legend.position = "top")
+
+```
+
+__Bronchial epithelium eQTLs that have not been discovered before from GTEx v8__
+
+```{r genes-not-discovered-before}
+gtex_gene_level <- lapply(names(gtex), function(x) {
+  qtl <- fread(paste0("~/gtex_v8/eqtl/GTEx_Analysis_v8_eQTL/", x, ".v8.egenes.txt.gz"), header = T, sep = "\t", stringsAsFactors = F, data.table = F)
+  qtl$gene_id.1 <- sapply(qtl$gene_id, function(x) unlist(strsplit(x, "[.]"))[1])
+  qtl <- qtl[qtl$gene_id.1 %in% spiromics$gene_id,]
+  return(qtl)
+})
+names(gtex_gene_level) <- names(gtex)
+
+# egenes not discovered before
+spiromics$discovered_in_gtex <- sapply(spiromics$gene_id, function(x) {
+  sum(sapply(gtex_gene_level, function(g) sum(g$gene_id.1 %in% x)))
+})
+
+# egenes not discovered before in gtex lung
+spiromics$discovered_in_gtex.lung <- sapply(spiromics$gene_id, function(x) {
+  sum(sapply(gtex_gene_level["Lung"], function(g) sum(g$gene_id.1 %in% x)))
+})
+
+# not discovered or not significant - nominal p-value >= 0.05
+spiromics$not_significant_in_gtex <- NA
+for (i in 1:nrow(spiromics)) {
+  x <- spiromics$gene_id[i]
+  k <- 0
+  for (j in 1:length(gtex)) {
+    foo <- gtex[[j]]
+    if (x %in% foo$gene_id.1) {
+      if (foo[foo$gene_id.1 %in% x, "pval_nominal"] >= 0.05) {
+        k <- k + 1
+      }
+    } else {
+      if (!x %in% gtex_gene_level[[j]]$gene_id.1) {
+        k <- k + 1 
+      }
+    }
+  }
+  spiromics$not_significant_in_gtex[i] <- k
+}
+
+# Gene lists for pathway analyses
+
+write.table(spiromics[spiromics$discovered_in_gtex.lung %in% 0, "gene_id"], file = here("lookup_gtex", "replicate_spiromics_eqtls.not_found_in_gtex_v8.lung.txt"), col.names = F, row.names = F, sep = "\t", quote = F)
+
+write.table(spiromics$gene_id, file = here("lookup_gtex", "replicate_spiromics_eqtls.background_genes.txt"), col.names = F, row.names = F, sep = "\t", quote = F)
+
+```
+
+* `r sum(spiromics$discovered_in_gtex %in% 0)` (`r round(mean(spiromics$discovered_in_gtex %in% 0)*100,1)`%) eGenes (not gene-variant pairs) not found from any of the GTEx tissues
+    + Not expressed or no data?
+* `r sum(spiromics$discovered_in_gtex.lung %in% 0)` (`r round(mean(spiromics$discovered_in_gtex.lung %in% 0)*100,3)`%) eGenes (not gene-variant pairs) not found from Lung
+* `r sum(spiromics$not_significant_in_gtex %in% 49)` (`r round(mean(spiromics$not_significant_in_gtex %in% 49)*100,3)`%) eGenes (not gene-variant pairs) not found from any of the GTEx tissues or the gene-variant pair has nominal p-value > 0.05 in all the tissues
+
+<!-- * `r sum(spiromics$discovered_in_gtex.epithelial_cell_enriched_tissues %in% 0)` eGenes (not gene-variant pairs) not found from Esophagus_Mucosa, Skin_Sun_Exposed_Lower_leg, Skin_Not_Sun_Exposed_Suprapubic, Pancreas, Lung -->
+
+__Bronchial epithelium eQTLs that have not been discovered before from the eQTLGen Consortium__
+
+```{r read-in-eqtlgen-data, eval=FALSE}
+eqtlgen <- fread("https://molgenis26.gcc.rug.nl/downloads/eqtlgen/cis-eqtl/2019-12-11-cis-eQTLsFDR-ProbeLevel-CohortInfoRemoved-BonferroniAdded.txt.gz", header = T, sep = "\t", stringsAsFactors = F, data.table = F)
+
+# Keep most significant variant per gene
+eqtlgen <- eqtlgen[order(-abs(eqtlgen$Zscore)),]
+eqtlgen <- eqtlgen[!duplicated(eqtlgen$Gene), ]
+
+save(eqtlgen, file = here("references", "eqtlgen_best_snp_per_gene.RData"))
+```
+
+```{r}
+load(here("references", "eqtlgen_best_snp_per_gene.RData"))
+
+# double check if we can find some more matches
+no_match <- eqtlgen[!(eqtlgen$Gene %in% gene_annot$gene_id | eqtlgen$GeneSymbol %in% gene_annot$gene_name), ]
+# lookup from biomart
+ensembl <- biomaRt::useMart(biomart='ENSEMBL_MART_ENSEMBL', dataset = "hsapiens_gene_ensembl")
+gene_mart <- biomaRt::getBM(attributes = c('ensembl_gene_id', 'hgnc_symbol', 'external_gene_name'), 
+                  filters = c('hgnc_symbol'), 
+                  values = no_match$GeneSymbol, 
+                  mart = ensembl)
+gene_mart <- gene_mart[gene_mart$ensembl_gene_id %in% gene_annot$gene_id,]
+eqtlgen[match(gene_mart$hgnc_symbol, eqtlgen$GeneSymbol), "Gene"] <- gene_mart$ensembl_gene_id
+eqtlgen <- eqtlgen[eqtlgen$Gene %in% gene_annot$gene_id | eqtlgen$GeneSymbol %in% gene_annot$gene_name, ]
+
+# egenes not discovered
+spiromics$discovered_in_eqtlgen <- ifelse(spiromics$gene_id %in% eqtlgen$Gene | spiromics$gene_name %in% eqtlgen$GeneSymbol, 1, 0)
+
+# not discovered or not significant - nominal p-value >= 0.05
+spiromics$not_significant_in_eqtlgen <- NA
+for (i in 1:nrow(spiromics)) {
+  if (spiromics$discovered_in_eqtlgen[i] == 1) {
+    check <- eqtlgen[eqtlgen$Gene %in% spiromics$gene_id[i] | eqtlgen$GeneSymbol %in% spiromics$gene_name[i], ]
+    # a handful cases have matching gene_id and gene_name, resulting in two rows => taking min P
+    spiromics$not_significant_in_eqtlgen[i] <- ifelse(min(check$Pvalue) >= 0.05, 1, 0)
+  } else {
+    spiromics$not_significant_in_eqtlgen[i] <- 1
+  }
+}
+
+```
+
+* `r sum(spiromics$discovered_in_eqtlgen %in% 0)` (`r round(mean(spiromics$discovered_in_eqtlgen %in% 0)*100,1)`%) eGenes (not gene-variant pairs) not found from eQTLGen Consortium
+    + Not expressed or issues with gene annotations?
+* `r sum(spiromics$not_significant_in_eqtlgen %in% 1)` (`r round(mean(spiromics$not_significant_in_eqtlgen %in% 1)*100,3)`%) eGenes (not gene-variant pairs) not found from eQTLGen Consortium or have minimum nominal p-value >= 0.05
+
+```{r}
+# eGenes not found from GTEx and eQTLGen or have nominal p-values >= 0.05 in all
+table("Not discovered in GTEx" = spiromics$discovered_in_gtex == 0, "Not discovered in eQTLGen" = spiromics$discovered_in_eqtlgen == 0)
+
+```
+
+```{r write-out-data}
+write.table(spiromics[, c("gene_id", "gene_name", "gene_type", "variant_id", "rs_id_dbSNP151_GRCh38p7", "qval", "discovered_in_gtex", "discovered_in_gtex.lung", "not_significant_in_gtex", "discovered_in_eqtlgen")], file = here("eqtl", "cis", "spiromics.cis_eqtl.egenes.discovered_in_gtex_eqtlgen.txt"), col.names = T, row.names = F, sep = "\t", quote = F)
+
+```
+
+## Replication of SPIROMICS eQTLs in GTEx
+
+```{r}
+p_th <- 1e-04
+
+```
+
+Calculate pi1, and compare the p-values and slopes of gene-variants pairs in SPIROMICS and GTEx
+
+```{r fig-replication-by-tissue, fig.width=4, fig.height=9, out.width='25%', warning=FALSE}
+max_s <- round(max(-log10(spiromics$pval_nominal)))
+spiromics$group <- "spiromics"
+pi1_list <- NULL
+conc_list <- NULL
+# genes that are not signifcant in GTEx tissues, nominal p-value > 0.1
+not_signif_in_gtex <- list()
+
+for (i in 1:length(gtex)) {
+  tissue <- names(gtex)[i]
+  dat <- gtex[[tissue]]
+  dat$group <- "gtex"
+  max_g <- round(max(-log10(dat$pval_nominal)))
+  if (nchar(max_g) > 2) {
+    max_g <- round(max_g, -2)
+  }
+
+  # not significant in gtex
+  not_signif_in_gtex[[i]] <- dat[dat$pval_nominal > 0.1,]
+  
+  # combine datasets
+  plot_data <- rbind(dat[, c("id", "slope", "pval_nominal", "group")],
+                     spiromics[match(dat$id, spiromics$id), c("id", "slope", "pval_nominal", "group")])
+  
+  # histogram and pi1
+  pi1 <- tryCatch(1 - qvalue(dat$pval_nominal)$pi0, error = function(e) "N/A")
+  pi1_list <- c(pi1_list, pi1)
+  g_hist <- ggplot(data = dat, aes(x = pval_nominal)) +
+    labs(title = paste0("GTEx ", tissue),
+         x = "-log10(P-values in GTEx)",
+         y = "Count") +
+    geom_histogram(col = "white", bins = 30) +
+    annotate("text", x = 0.8, y = Inf, label = bquote(pi[1] == .(round(pi1, 3))), vjust = 1, hjust = 1)
+  
+  # p-values
+  g_pval <- plot_data %>% 
+    pivot_wider(id_cols = "id", names_from = "group", values_from = "pval_nominal") %>% 
+    ggplot(aes(x = -log10(spiromics), y = -log10(gtex))) +
+    labs(title = "Comparison of P-values",
+         x = "-log10(P-value in SPIROMICS)",
+         y = "-log10(P-value in GTEx)") +
+    geom_point(alpha = 0.5) +
+    geom_abline(intercept = 0, slope = max_g/max_s, lty = 2, col = "royalblue", lwd = 1)
+  
+  # betas - if significant in both
+  g_beta <- plot_data %>% 
+    pivot_wider(id_cols = "id", names_from = "group", values_from = c("slope", "pval_nominal")) %>% 
+    filter(pval_nominal_gtex < p_th) %>% 
+    ggplot(aes(x = slope_spiromics, y = slope_gtex)) +
+    labs(title = "Comparison of slopes",
+         subtitle = paste0("Variants with P-value < ", p_th),
+         x = "Slope in SPIROMICS",
+         y = "Slope in GTEx") +
+    geom_point(alpha = 0.5) +
+    #geom_abline(intercept = 0, slope = 1, lty = 2, col = "royalblue", lwd = 1) +
+    #geom_abline(intercept = 0, slope = -1, lty = 2, col = "royalblue", lwd = 1) +
+    geom_hline(yintercept = 0, col = "grey75", lty = 2) +
+    geom_vline(xintercept = 0, col = "grey75", lty = 2)
+  
+  # concordance rate
+  conc_list <- c(conc_list,
+                 plot_data %>% 
+                   pivot_wider(id_cols = "id", names_from = "group", values_from = c("slope", "pval_nominal")) %>% 
+                   filter(pval_nominal_gtex < p_th) %>% 
+                   summarize(conc = mean((slope_spiromics < 0 & slope_gtex < 0) | (slope_spiromics > 0 & slope_gtex > 0))) %>% 
+                   as.numeric())
+  
+  # combine figures
+  p <- g_hist / g_pval / g_beta / 
+      plot_layout(heights = c(2, 3, 3))
+  
+  if (tissue %in% "Lung") {
+    print(p)
+  }
+  
+  if (i %% 3 == 0) cat("-------------------------------", fill = T)
+}
+
+names(not_signif_in_gtex) <- names(gtex)
+
+```
+
+Two different metrics for estimating replication rate:
+
+* concordance rate - proportion of gene-variant pairs that have the same direction of effect
+    + Only for gene-variant pairs that have nominal p-value < `r p_th` in GTEx
+* $\pi_1$, proportion of true positives
+
+```{r fig-replication-2-metrics, fig.height=7, fig.width=9, out.width='75%'}
+plot_data <- data.frame(tissue = names(gtex),
+                        pi1 = pi1_list,
+                        concordance = conc_list,
+                        stringsAsFactors = F)
+medians <- apply(plot_data[,2:ncol(plot_data)], 2, median)
+medians <- data.frame(metrics = names(medians),
+                      medians = medians,
+                      stringsAsFactors = F)
+
+# pi1
+g2 <- plot_data %>% 
+  ggplot(aes(x = tissue, y = pi1, fill = tissue)) + #alpha = as.factor(alpha), 
+  labs(y = "Proportion of true\npositives",
+       x = "") +
+  geom_col() +
+  facet_grid(metrics ~ ., scales = "free_y") +
+  geom_hline(data = medians[medians$metrics %in% "pi1",], aes(yintercept = medians), lty = 2, col = "indianred", size = 0.75) +
+  scale_fill_manual(values = gtex_colors[match(sort(unique(plot_data$tissue)), gtex_colors$tissue_id), "tissue_color_hex"], guide = FALSE) +
+  scale_y_continuous(limits = c(0, 0.8)) +
+  theme(axis.text.x = element_text(size = 9.5, angle = 45, hjust = 1))
+
+# concordance separately because we need to zoom-in on the scale
+g1 <- plot_data %>% 
+  ggplot(aes(x = tissue, y = concordance, fill = tissue)) + #alpha = as.factor(alpha), 
+  labs(title = "Replication in GTEx",
+       y = "Proportion of eQTLs\nwith effects in the same direction",
+       x = "") +
+  geom_col() +
+  coord_cartesian(ylim = c(0.6, 0.7)) +
+  facet_grid(metrics ~ ., scales = "free_y") +
+  geom_hline(data = medians[medians$metrics %in% c("concordance"),], aes(yintercept = medians), lty = 2, col = "indianred", size = 0.75) +
+  scale_fill_manual(values = gtex_colors[match(sort(unique(plot_data$tissue)), gtex_colors$tissue_id), "tissue_color_hex"], guide = FALSE) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank())
+
+g1 / g2
+
+```
+
+Note: red lines denotes the median of the given replication metrics.
+
+#### Replication estimates and cell type enrichment
+
+Using the xCell enrichment scores for 7 cell types across all tissue samples to explain the replication patterns:
+
+* adipocytes, epithelial cells, hepatocytes, keratinocytes, myocytes, neurons, neutrophils
+
+```{r get-gtex-data}
+# xcell enrichemtn scores from the gtex portal
+xcell <- fread("https://storage.googleapis.com/gtex_analysis_v8/interaction_qtl_data/GTEx_Analysis_v8_xCell_scores_7_celltypes.txt.gz", header = T, sep = "\t", stringsAsFactors = F, data.table = F)
+
+# sample attributes from the gtex portal
+gtex_sample <- fread("https://storage.googleapis.com/gtex_analysis_v8/annotations/GTEx_Analysis_v8_Annotations_SampleAttributesDS.txt", header = T, sep = "\t", stringsAsFactors = F, data.table = F)
+
+# double-check
+stopifnot(gtex_colors$tissue_name %in% gtex_sample$SMTSD)
+
+```
+
+```{r fig-xcell-violinplot, fig.width=10, fig.height=10, message=FALSE}
+xcell_mod <- xcell %>% 
+  pivot_longer(cols = -cell_type, names_to = "sample_id", values_to = "xcell") %>% 
+  mutate(tissue_name = gtex_sample[match(sample_id, gtex_sample$SAMPID), "SMTSD"]) %>%
+  mutate(tissue_abbr = gtex_colors[match(tissue_name, gtex_colors$tissue_name), "tissue_abbrv"]) %>% 
+  filter(!is.na(tissue_abbr)) %>% 
+  mutate(tissue_id = gtex_colors[match(tissue_name, gtex_colors$tissue_name), "tissue_id"]) %>% 
+  data.frame(stringsAsFactors = F)
+
+# fig
+xcell_mod %>% 
+  #filter(cell_type %in% "Epithelial_cells") %>% 
+  ggplot(aes(x = tissue_abbr, y = xcell, fill = tissue_abbr)) +
+  labs(title = "xCell enrichment scores for 7 cell types across all tissue samples",
+       x = "",
+       y = "xCell score") +
+  geom_boxplot(notch = TRUE, outlier.size = 0.25) +
+  facet_grid(cell_type ~ .) +
+  scale_fill_manual(values = gtex_colors[match(sort(unique(xcell_mod$tissue_abbr)), gtex_colors$tissue_abbrv), "tissue_color_hex"], guide = F) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+Plotting median xCell enrichemnt score against replication estimate
+
+* Is there statistically significant differences between tissues with high enrichment score for a particular cell type?
+    + Wilcoxon rank sum test between tissues with median enrichment score > 0.1 (enriched tissues) VS others (not enriched for this given cell type)
+
+```{r fig-replication-xcell, fig.width=15, fig.height=5.5, warning=FALSE}
+xcell_mod_replication <- xcell_mod %>% 
+  group_by(tissue_id, cell_type) %>% 
+  summarise(n = n(),
+            xcell_median = median(xcell),
+            xcell_mean = mean(xcell)) %>% 
+  ungroup %>% 
+  mutate(enriched_tissue = ifelse(xcell_median > 0.1, 1, 0)) %>% 
+  mutate(pi1 = plot_data[match(tissue_id, plot_data$tissue), "pi1"],
+         concordance = plot_data[match(tissue_id, plot_data$tissue), "concordance"]) %>% 
+  data.frame(stringsAsFactors = F)
+ 
+#wilcox_test_all <- NULL
+plots <- lapply(c("concordance", "pi1"), function(x) {  
+  xcell_mod_replication$x <- xcell_mod_replication[, x]
+  
+  wilcox_test <- lapply(sort(unique(xcell_mod_replication$cell_type)), function(celltype) {
+    wilcox <- with(xcell_mod_replication[xcell_mod_replication$cell_type %in% celltype, ],
+         wilcox.test(x ~ enriched_tissue))
+    out <- data.frame(metrics = x,
+                      cell_type = celltype,
+                      W = wilcox$statistic,
+                      pval = wilcox$p.value)
+    return(out)
+  })
+  
+  wilcox_test <- do.call(rbind, wilcox_test)
+  #wilcox_test_all <- rbind(wilcox_test_all, wilcox_test)
+  wilcox_test$x <- min(xcell_mod_replication$x)
+  wilcox_test$y <- 1
+  wilcox_test$label <- paste0("P = ", signif(wilcox_test$pval, 2))
+  
+  g <- ggplot(data = xcell_mod_replication, aes(x = x, y = xcell_median)) +
+    labs(x = x,
+         y = "Median xCell score",
+         size = "Sample size") +
+    geom_point(aes(size = n, col = tissue_id)) +
+    geom_hline(yintercept = 0.1, lty = 2, col = "grey50") +
+    scale_color_manual(values = gtex_colors[match(sort(unique(xcell_mod$tissue_id)), gtex_colors$tissue_id), "tissue_color_hex"], guide = F) + 
+    facet_grid(. ~ cell_type, scales = "free") +
+    geom_text(data = wilcox_test, aes(x = x, y = y, label = label), vjust = 1, hjust = 0) +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank())
+  return(g)
+})
+
+plots[[1]] / plots[[2]] +
+  plot_layout(guides = 'collect')
+
+```
+
+Tissues with the median epithelial cell enrichment score > 0.1 - `r sum(xcell_mod_replication[xcell_mod_replication$cell_type %in% "Epithelial_cells", "xcell_median"] > 0.1)` tissues:
+
+```{r epithelial-cell-enriched-tissues}
+xcell_mod_replication %>% 
+  filter(cell_type %in% "Epithelial_cells") %>% 
+  filter(xcell_median > 0.1) %>% 
+  arrange(desc(xcell_median)) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14)
+
+```
+
+How much sample size affects the replication estimates?
+
+* Sample size is strongly correlated with pi1 and lambda, not that much affecting the concordance rate.
+
+```{r fig-replication-xcell-samplesize, fig.width=7.5, fig.height=3.5, warning=FALSE, out.width='50%'}
+# All the samples have all the 7 cell type estimates
+# Can pick just one to illustrate the association between sample size and replication estimate
+corr_test <- data.frame(metrics = c("concordance", "pi1"),
+                        x = c(max(xcell_mod_replication$concordance), min(xcell_mod_replication$pi1)),
+                        y = 800,
+                        rho = NA,
+                        pval = NA, 
+                        stringsAsFactors = F)
+corr_test[corr_test$metrics %in% "concordance", c("rho", "pval")] <- with(xcell_mod_replication[xcell_mod_replication$cell_type %in% "Epithelial_cells",],
+                                                                          unlist(cor.test(n, concordance, method = "spearman")[c("estimate", "p.value")]))
+corr_test[corr_test$metrics %in% "pi1", c("rho", "pval")] <- with(xcell_mod_replication[xcell_mod_replication$cell_type %in% "Epithelial_cells",],
+                                                                          unlist(cor.test(n, pi1, method = "spearman")[c("estimate", "p.value")]))
+corr_test$label <- paste0("rho = ", round(corr_test$rho, 3), "\nP = ", signif(corr_test$pval, 2))
+corr_test$hjust <- c(1, 0)
+
+xcell_mod_replication %>% 
+  filter(cell_type %in% "Epithelial_cells") %>% 
+  pivot_longer(cols = c("concordance", "pi1"), names_to = "metrics", values_to = "estimate") %>% 
+  ggplot(aes(x = estimate, y = n)) +
+  labs(x = "Replication estimate",
+       y = "Sample size",
+       size = "Sample size") +
+  geom_point(aes(size = n, col = tissue_id)) +
+  scale_color_manual(values = gtex_colors[match(sort(unique(xcell_mod$tissue_id)), gtex_colors$tissue_id), "tissue_color_hex"], guide = F) + 
+  facet_grid(. ~ metrics, scales = "free") +
+  geom_text(data = corr_test, aes(x = x, y = y, label = label, hjust = hjust), vjust = 1) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank())
+
+```
+
+Combine into one figure showing the effect of sample size and epithelial cell enrichment on replication measures.
+
+```{r fig-replication-gtex, fig.width=14.2, fig.height=6.8}
+plot_data <- xcell_mod_replication %>% 
+  filter(cell_type %in% "Epithelial_cells") %>% 
+  pivot_longer(cols = c("concordance", "pi1"), names_to = "metrics", values_to = "metrics_estimate")
+
+p_n <- ggplot(data = plot_data, aes(x = metrics_estimate, y = n)) +
+  labs(x = "Replication estimate",
+       y = "Sample size",
+       size = "Sample size") +
+  geom_point(aes(size = n, col = tissue_id)) +
+  scale_color_manual(values = gtex_colors[match(sort(unique(xcell_mod$tissue_id)), gtex_colors$tissue_id), "tissue_color_hex"]) + 
+  facet_grid(. ~ metrics, scales = "free") +
+  geom_text(data = corr_test, aes(x = x, y = y, label = label, hjust = hjust), vjust = 1) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank())
+
+# epithelial cell enrichment score
+wilcox_test <- lapply(c("concordance", "pi1"), function(x) {
+  xcell_mod_replication$x <- xcell_mod_replication[,x]
+  wilcox <- with(xcell_mod_replication[xcell_mod_replication$cell_type %in% "Epithelial_cells", ],
+                 wilcox.test(x ~ enriched_tissue))
+  out <- data.frame(metrics = x,
+                    cell_type = "Epithelial_cells",
+                    W = wilcox$statistic,
+                    pval = wilcox$p.value)
+  return(out)
+})
+wilcox_test <- do.call(rbind, wilcox_test)
+wilcox_test$x <- c(min(xcell_mod_replication$concordance), min(xcell_mod_replication$pi1))
+wilcox_test$y <- 1
+wilcox_test$label <- paste0("Wilcoxon P = ", signif(wilcox_test$pval, 2))
+
+p_xcell <- ggplot(data = plot_data, aes(x = metrics_estimate, y = xcell_median)) +
+  labs(x = "Replication estimate",
+       y = "Median epithelial cell enrichment",
+       size = "Sample size") +
+  geom_point(aes(size = n, col = tissue_id)) +
+  geom_hline(yintercept = 0.1, lty = 2, col = "grey50") +
+  scale_color_manual(values = gtex_colors[match(sort(unique(xcell_mod$tissue_id)), gtex_colors$tissue_id), "tissue_color_hex"]) + 
+  facet_grid(. ~ metrics, scales = "free") +
+  geom_text(data = wilcox_test, aes(x = x, y = y, label = label), vjust = 1, hjust = 0) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank())
+
+p_n / p_xcell +
+  plot_layout(guides = 'collect')
+
+
+```
