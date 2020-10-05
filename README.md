@@ -2,7 +2,7 @@
 
 Mapping of cis-eQTLs for COVID-19-related genes in the SPIROMICS dataset
 
-This repository contains code to conduct eQTL mapping in bronchial epithelium in the SPIROMICS cohort as presented in the manuscript "_Genetic and non-genetic factors affecting the expression of COVID-19-relevant genes in SPIROMICS bronchial epithelium_".
+This repository contains code to conduct eQTL mapping in bronchial epithelium in the SPIROMICS cohort as presented in the preprint "_Genetic and non-genetic factors affecting the expression of COVID-19 relevant genes in the large airway epithelium_" available in medRxiv ([link to preprint](https://www.medrxiv.org/content/10.1101/2020.10.01.20202820v1)).
 
 ## Overview of this repository
 
