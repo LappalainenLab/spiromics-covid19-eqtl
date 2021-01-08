@@ -1,7 +1,7 @@
 ---
 title: Regional association plots of eQTLs
 author: "Silva Kasela"
-date: "8/3/2020"
+date: "8/3/2020, updated on 1/5/2021"
 output: html_document
 ---
 
@@ -46,9 +46,9 @@ gene_df <- data.frame("gene_id" = c("ENSG00000130234", "ENSG00000184012"),
 ```
 
 ```{r}
-eqtl %>% 
-  filter(gene_id %in% gene_df$gene_id) %>% 
-  kable(row.names = FALSE) %>% 
+eqtl %>%
+  filter(gene_id %in% gene_df$gene_id) %>%
+  kable(row.names = FALSE) %>%
   kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14)
 
 ```
@@ -58,11 +58,11 @@ chr <- c("chrX", "chr21")
 
 eqtl_data_list <- lapply(chr, function(chr) {
   file <- here("eqtl", "cis", "allpairs", paste0("spiromics.cis_qtl_pairs.", chr, ".parquet"))
-  
-  dat <- read_parquet(file) %>% 
-    filter(phenotype_id %in% gene_df$gene_id) %>% 
+
+  dat <- read_parquet(file) %>%
+    filter(phenotype_id %in% gene_df$gene_id) %>%
     mutate(gene_name = gene_df[match(phenotype_id, gene_df$gene_id), "gene_name"])
-  
+
   dat$pos <- sapply(dat$variant_id, function(x) unlist(strsplit(x, "_"))[2])
   dat$pos <- as.numeric(dat$pos)
   return(dat)
@@ -77,7 +77,7 @@ for (i in 1:length(eqtl_data_list)) {
 
   # eGene significance level
   stats_egene <- eqtl[match(eqtl_data$gene_name[1], eqtl$gene_name), c("gene_name", "pval_nominal_threshold")]
-  
+
   g <- ggplot(eqtl_data, aes(x = pos, y = -log10(pval_nominal))) +
     labs(title = paste0("cis-eQTLs for ", eqtl_data$gene_name[1], " in bronchial epithelium"),
            x = paste0("Position on ", chr[i], " (Mb)"),
@@ -89,7 +89,7 @@ for (i in 1:length(eqtl_data_list)) {
     scale_y_continuous(limits = c(0, 6), expand = expansion(mult = c(0.05, 0.2), add = c(0, 0)))
   print(g)
 }
-  
+
 ```
 
 * Gene track
@@ -101,21 +101,21 @@ for (i in 1:length(eqtl_data_list)) {
   gen <- "hg38"
   xmin <- min(eqtl_data$pos)
   xmax <- max(eqtl_data$pos)
-  
+
   # ideogram
   itrack <- IdeogramTrack(genome = gen, chromosome = chr[i])
-  
+
   # coordinates
   gtrack <- GenomeAxisTrack()
-  
+
   ## highlight lead gwas variant
   #atrack <- AnnotationTrack(genome = gen, chromosome = chr, start = gwas_pos, end = gwas_pos + 1, name = "SNP", col = "royalblue",  cex.title = 1.1)
-  
+
   # ensembl genes track
   bm <- useMart(biomart = "ENSEMBL_MART_ENSEMBL", dataset = "hsapiens_gene_ensembl")
-  # limit the returned gene models to RefSeq models only - filter=list(with_refseq_mrna=TRUE), 
+  # limit the returned gene models to RefSeq models only - filter=list(with_refseq_mrna=TRUE),
   biomtrack <- BiomartGeneRegionTrack(genome = gen, chromosome = chr[i], start = xmin, end = xmax, name = "Genes", biomart = bm, cex.title = 1.1, stacking = "squish")
-  
+
   # plot the union of all the exons as a sort of meta-transcript
   plotTracks(list(itrack, gtrack, biomtrack), collapseTranscripts = "meta", transcriptAnnotation = "symbol", stackHeight = 0.25, from = xmin, to = xmax, cex.main = 1.1)
 }
@@ -146,9 +146,9 @@ lead_gwas_id <- c("chr3_45867022_C_G_b38", # ANA_C2_V2
 ```
 
 ```{r}
-eqtl %>% 
-  filter(gene_id %in% gene_df$gene_id) %>% 
-  kable(row.names = FALSE) %>% 
+eqtl %>%
+  filter(gene_id %in% gene_df$gene_id) %>%
+  kable(row.names = FALSE) %>%
   kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F, font_size = 14)
 
 ```
@@ -157,8 +157,8 @@ eqtl %>%
 chr <- "chr3"
 file <- here("eqtl", "cis", "allpairs", paste0("spiromics.cis_qtl_pairs.", chr, ".parquet"))
 
-eqtl_data <- read_parquet(file) %>% 
-  filter(phenotype_id %in% gene_df$gene_id) %>% 
+eqtl_data <- read_parquet(file) %>%
+  filter(phenotype_id %in% gene_df$gene_id) %>%
   mutate(gene_name = gene_df[match(phenotype_id, gene_df$gene_id), "gene_name"],
          gene_name_f = factor(gene_name, levels = gene_df$gene_name))
 
@@ -186,7 +186,7 @@ blank_data <- data.frame(pos = median(eqtl_data$pos),
                          pval_nominal = c(ifelse(min_p > 10**-6 | is.na(min_p) , 10**-6, min_p), rep(1, length(min_p))),
                          gene_name_f = factor(rep(levels(eqtl_data$gene_name_f), 2), levels = levels(eqtl_data$gene_name_f)),
                          stringsAsFactors = F)
-  
+
 ggplot(eqtl_data, aes(x = pos, y = -log10(pval_nominal))) +
   labs(title = "cis-eQTLs in bronchial epithelium",
          x = paste0("Position on ", chr, " (Mb)"),
@@ -223,7 +223,7 @@ gtrack <- GenomeAxisTrack()
 
 # ensembl genes track
 bm <- useMart(biomart = "ENSEMBL_MART_ENSEMBL", dataset = "hsapiens_gene_ensembl")
-# limit the returned gene models to RefSeq models only - filter=list(with_refseq_mrna=TRUE), 
+# limit the returned gene models to RefSeq models only - filter=list(with_refseq_mrna=TRUE),
 biomtrack <- BiomartGeneRegionTrack(genome = gen, chromosome = chr, start = xmin, end = xmax, name = "Genes", biomart = bm, cex.title = 1.1, stacking = "squish")
 
 # plot the union of all the exons as a sort of meta-transcript
@@ -231,3 +231,91 @@ plotTracks(list(itrack, gtrack, biomtrack), collapseTranscripts = "meta", transc
 
 ```
 
+##### Expression levels of the genes in the chr3 locus
+
+```{r read-in-tpms}
+# TPMs for all samples and genes (including those that were excluded from eQTL mapping)
+tpm_data <- read.table(here("expression", "tpm", "200328_spiromics_epibrush_outlierfiltered_tpms.txt"), header = T, sep = "\t", stringsAsFactors = F)
+rownames(tpm_data) <- tpm_data$gene_id
+tpm_data$gene_id <- NULL
+
+# Candidate genes - 514 in total, 496 included in eQTL mapping
+candidate_genes <- read.table(here("candidate_genes", "covid19_candidate_genes_v11.txt"), header = T, sep = "\t", stringsAsFactors = F)
+
+# Genes to highlight
+gene_df <- data.frame("gene_id" = c("ENSG00000163817", "ENSG00000163818", "ENSG00000173585", "ENSG00000163820", "ENSG00000172215", "ENSG00000173578",
+                                    "ENSG00000130234", "ENSG00000184012"),
+                      "gene_name" = c("SLC6A20", "LZTFL1", "CCR9", "FYCO1", "CXCR6", "XCR1",
+                                      "ACE2", "TMPRSS2"),
+                      stringsAsFactors = F)
+
+```
+
+```{r}
+median_tpm <- apply(tpm_data, 1, median)
+
+# Dataframe for plotting
+df <- data.frame(gene_id = names(median_tpm),
+                 median_tpm = log10(median_tpm + 1),
+                 stringsAsFactors = F)
+df$all <- 1
+df$is_expressed <- ifelse(df$gene_id %in% eqtl$gene_id, 1, 0)
+df$is_egene <- ifelse(df$gene_id %in% eqtl[eqtl$qval < 0.05, "gene_id"], 1, 0)
+df$is_candidate_gene <- ifelse(df$gene_id %in% candidate_genes$gene_id, 1, 0)
+df$is_candidate_egene <- ifelse(df$is_egene == 1 & df$is_candidate_gene == 1, 1, 0)
+
+```
+
+```{r fig-median-tpm, fig.width=10, fig.height=4}
+df <- df %>%
+  tidyr::pivot_longer(cols = c("all", "is_expressed", "is_egene", "is_candidate_gene", "is_candidate_egene"), names_to = "annot", values_to = "yes_or_no") %>%
+  filter(yes_or_no %in% 1) %>%
+  mutate(annot_f = factor(annot, levels = c("all", "is_expressed", "is_candidate_gene", "is_egene", "is_candidate_egene")),
+         highlight = ifelse(gene_id %in% gene_df$gene_id, 1, 0)) %>%
+  arrange(highlight)
+
+
+df_subset <- df %>%
+  filter(gene_id %in% gene_df$gene_id) %>%
+  mutate(gene_name = gene_df[match(gene_id, gene_df$gene_id), "gene_name"])
+
+ggplot(data = df, aes(x = annot, y = median_tpm)) +
+  geom_jitter(width = 0.2, color = ifelse(df$gene_id %in% df_subset$gene_id, "red", "grey50")) +
+  geom_boxplot(notch = TRUE, alpha = 0.5, outlier.shape = NA) +
+  #geom_text(data = df_subset, aes(label = gene_name), size = 1) +
+  ggrepel::geom_text_repel(data = df_subset, aes(label = gene_name), box.padding = 0.5, max.overlaps = Inf, min.segment.length = 0, nudge_x = 1)  +
+  geom_point(data = df_subset, color = "red") +
+  facet_wrap(~annot_f, ncol = 5, scales = "free_x")
+
+```
+
+Median expression levels by groups:
+
+```{r}
+df %>%
+  group_by(annot_f) %>%
+  summarize(median = median(median_tpm),
+            quantile_0.25 = quantile(median_tpm, 0.25),
+            quantile_0.75 = quantile(median_tpm, 0.75),
+            mad = mad(median_tpm))
+
+```
+
+Median expression for the genes of interest:
+
+```{r}
+df_subset %>%
+  dplyr::select(gene_id, gene_name, median_tpm) %>%
+  distinct(gene_id, .keep_all = TRUE) %>%
+  arrange(gene_name)
+
+```
+
+```{r, eval=FALSE}
+#"ENSG00000111796" - "KLRB1"
+# "ENSG00000149294" - "NCAM1"
+
+df %>%
+  filter(gene_id %in% c("ENSG00000111796", "ENSG00000149294"))
+
+```
